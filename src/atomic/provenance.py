@@ -1,8 +1,5 @@
-"""Provenance: every scalar (`Quantity`) and array (`Field`) carries a record of
-how it was computed and how far it can be trusted.
-
-That is what enforces the prime directive mechanically: nothing here quietly
-lies about physics.
+"""Provenance: every boundary value carries how it was computed and how far it
+can be trusted. Nothing here quietly lies about physics.
 """
 
 from dataclasses import dataclass, field
@@ -94,12 +91,7 @@ class Quantity:
 
 @dataclass(frozen=True)
 class Field:
-    """An array-valued physical quantity: samples of a function on a 1-D grid.
-
-    This completes the boundary rule: every physical value that crosses a module
-    boundary is a Quantity (scalar), a Field (array), or a container carrying
-    its own Provenance.
-    """
+    """An array-valued physical quantity: samples of a function on a 1-D grid."""
 
     values: np.ndarray
     grid: np.ndarray

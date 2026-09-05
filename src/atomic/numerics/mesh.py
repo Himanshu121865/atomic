@@ -1,80 +1,28 @@
-"""Radial meshes, and the discretization that goes with them (NUMERICAL).
+"""Radial meshes and their discretizations (NUMERICAL).
 
-A uniform grid has to resolve two scales at once. The 1s core contracts as
-1/Z, so the step has to shrink as 1/Z; the valence still reaches tens of bohr,
-so the box cannot shrink with it. Argon needs h = 5.6e-4 over 40 bohr, which is
-72000 points, and 99% of them sit in vacuum describing a function that is zero.
-Measured, that costs 88 seconds per SCF step and about an hour per atom.
+A uniform grid wastes ~99% of its points in vacuum at high Z. The exponential
+mesh r = r_min e^(i delta) keeps constant RELATIVE resolution with a few
+thousand points instead of ~72000 for argon.
 
-An exponential mesh r = r_min e^(i delta) spends its points where the physics
-is: constant RELATIVE resolution, so the innermost interval is as fine compared
-to the 1s as the outermost is compared to the valence tail. Argon then needs a
-few thousand points instead of seventy-two thousand.
-
-## The discretization
-
-Each mesh type gets the kinetic operator that its own change of variables
-produces, rather than sharing one generic assembly. The obvious alternative,
-the finite-element weak form, would have covered any mesh at once, but it does
-not survive the origin: lumping the mass matrix costs
-O(delta^2) RELATIVE, the kinetic term it divides is O(1/delta^2), and the
-product is a finite spurious multiple of 1/r^2. That is 4e10 hartree of
-fictitious repulsion at r = 1e-6, and it does not shrink under refinement of
-the mesh. A term proportional to 1/r^2 has to be exactly right or not present
-at all.
-
-The exponential mesh's own transformation, with x = ln r and P = sqrt(r) Q,
-gives the exact operator:
+Each mesh type carries the kinetic operator its own change of variables
+produces. On the exponential mesh, x = ln r with P = sqrt(r) Q gives:
 
     diag      V(r) + (2l+1)^2 / 8r^2 + 1 / delta^2 r^2
     offdiag   -1 / 2 delta^2 r_i r_i+1
 
-where the (2l+1)^2/8 is the usual l(l+1)/2 plus the 1/8 the substitution
-generates. The uniform mesh stays on the 3-point stencil it has always used,
-so the exponential mesh is a new capability rather than a rewrite of results
-already validated.
+The eigenproblem runs on S = sqrt(delta J) P, so the plain Euclidean dot
+product on S is the physical integral P^2 dr.
 
-The working variable: the eigenproblem is solved for S = sqrt(delta J) P, not
-for P. That substitution is what makes the plain Euclidean dot product on S
-equal the physical integral P^2 dr, so an eigensolver that knows nothing about
-the mesh still measures the right norm.
+Inner wall: an exponential mesh cannot reach the origin, so the ghost node
+below r_min is folded in (S_-1 = S_0 exp(-(l+3/2) delta)), making the wall
+error quadratic in r_min. Two errors oppose: wall truncation ~ 2 (Z r_min)^2
+and conditioning noise ~ eps / (delta^2 r_min^2 |E|), minimized at
+Z r_min ~ 1.1e-3 with a floor near 2.4e-6 relative, independent of Z.
+`for_atom` places r_min at 1e-3/Z. Never Richardson-extrapolate past the
+optimum: the residual there is conditioning noise, not a smooth power.
 
-## The inner wall, and why this mesh has an accuracy floor
-
-An exponential mesh cannot reach the origin, so P = 0 is imposed at r_min
-instead of at 0. Left as a hard wall that is expensive: a hard sphere of radius
-a shifts an s-state by 2 pi a |psi(0)|^2, which for hydrogen is exactly 2a, so
-r_min = 1e-2 costs 3.5% of the ground state and the error falls only
-LINEARLY in r_min. Measured: 3.5e-2, 3.9e-3 and 3.8e-4 at r_min = 1e-2, 1e-3,
-1e-4.
-
-The fix is to stop pretending P vanishes there. P ~ r^(l+1) near the origin, so
-the ghost node one step below r_min is not zero, it is
-S_-1 = S_0 exp(-(l+3/2) delta), and folding that into the first diagonal entry
-turns the linear error quadratic. It buys two orders at every r_min.
-
-That leaves a genuine floor, stated here rather than left to be discovered
-later. Two errors move in opposite directions:
-
-    inner-wall truncation    ~ 2 (Z r_min)^2, relative
-    eigensolver conditioning ~ eps / (delta^2 r_min^2 |E|), relative
-
-the second because the symmetric operator's largest entry is 1/delta^2 r_min^2
-while its lowest eigenvalue is order Z^2, and a symmetric eigensolve is
-accurate to eps times the norm. The product is minimized at Z r_min ~ 1.1e-3
-with a floor near 2.4e-6 relative, INDEPENDENT of Z and of the point count. At
-the optimum the measurement gives 2.2e-6 for hydrogen and 1.8e-6 for Z = 18.
-
-So `for_atom` places r_min at 1e-3/Z, and 2e-6 relative is what this mesh
-delivers: about fifty times better than the 1e-4 the Hartree-Fock benchmarks
-need, and reached with forty times fewer points than the uniform grid. It is
-also why nothing here should ever be Richardson-extrapolated: past the optimum
-the residual is conditioning noise, not a smooth power of delta, and
-extrapolating noise sharpens nothing.
-
-Everything here is in Hartree atomic units. Plain arrays in, plain arrays out:
-this is quadrature and discretization rather than physics, so provenance
-belongs to the caller. Same exemption documented in slater.py.
+Hartree atomic units throughout. Plain arrays in/out: quadrature, not physics,
+so provenance belongs to the caller (same exemption as slater.py).
 """
 
 from dataclasses import dataclass
@@ -97,17 +45,12 @@ _OPTIMAL_SCALED_INNER_RADIUS = 1.0e-3
 
 @dataclass(frozen=True)
 class RadialMesh:
-    """A radial grid together with the coordinate its quadrature is uniform in.
+    """A radial grid plus the coordinate its quadrature is uniform in.
 
-    `jacobian` is dr/dx at each node. `kinetic_diag` and `kinetic_offdiag` are
-    the l-independent part of -1/2 d2/dr2 in the S representation, which is
-    where the mesh's own change of variables lives; the centrifugal term is
-    added in hamiltonian_bands, because it depends on l.
-
-    `inner_wall_coupling` is what the first row would couple to a node below
-    r[0] with, and `inner_ghost_ratio` is that node's radius over r[0]. For a
-    mesh whose wall sits exactly on the origin the ratio is zero, which
-    makes the correction vanish identically rather than by cancellation.
+    `jacobian` is dr/dx per node; `kinetic_*` is the l-independent part of
+    -1/2 d2/dr2 in the S representation. `inner_wall_coupling` /
+    `inner_ghost_ratio` describe the ghost node below r[0] (ratio 0 = wall
+    exactly on the origin, correction vanishes identically).
     """
 
     r: np.ndarray
@@ -160,21 +103,11 @@ class RadialMesh:
 
     @property
     def outer_wall(self) -> float:
-        """Where the outer Dirichlet condition sits, one step past r[-1].
-
-        It is not the same as r[-1]: a uniform mesh built for a box of 40
-        bohr has its last node just inside 40 and its wall exactly on it.
-        """
+        """Outer Dirichlet wall: one step past r[-1], not r[-1] itself."""
         return float(self.r[-1] + self.step * self.jacobian[-1])
 
     def integrate(self, f: np.ndarray) -> float:
-        """integral f(r) dr, taken as integral f J dx by the trapezoid
-        rule in x.
-
-        On a uniform mesh J = 1 and x = r, so this is exactly
-        np.trapezoid(f, r), the quadrature every existing result was computed
-        with.
-        """
+        """integral f(r) dr as integral f J dx by the trapezoid rule in x."""
         arr = np.asarray(f, dtype=float)
         if arr.shape != self.r.shape:
             raise ValueError(
@@ -249,12 +182,7 @@ class RadialMesh:
 
 
 def uniform_mesh(r_max: float, points: int) -> RadialMesh:
-    """r = h, 2h, ... with h = r_max / (points + 1).
-
-    This is the convention radial_solver.solve_radial has always used:
-    r[0] == h, so the Dirichlet wall lands exactly on r = 0 rather than one step
-    inside it.
-    """
+    """r = h, 2h, ... with h = r_max / (points + 1); the wall lands on r = 0."""
     if r_max <= 0.0:
         raise ValueError(f"box radius must be positive, got {r_max!r}")
     if points < 3:
@@ -302,30 +230,17 @@ def exponential_mesh(r_min: float, r_max: float, points: int) -> RadialMesh:
 
 
 def mesh_for_atom(z: int, r_max: float, points: int) -> RadialMesh:
-    """The exponential mesh at the inner radius that minimizes total error.
-
-    r_min = 1e-3 / Z is where wall truncation and eigensolver conditioning
-    cross; see the module docstring for the measured balance.
-    Z sets both scales in the problem, which is why one constant covers every
-    element.
-    """
+    """The exponential mesh at the r_min minimizing total error (1e-3 / Z)."""
     if z < 1:
         raise ValueError(f"Z must be >= 1, got {z}")
     return exponential_mesh(_OPTIMAL_SCALED_INNER_RADIUS / z, r_max, points)
 
 
 def mesh_for_atom_at_step(z: int, r_max: float, step: float) -> RadialMesh:
-    """`mesh_for_atom`, sized by the step you want rather than a point count.
+    """`mesh_for_atom`, sized by step instead of point count.
 
-    This exists so callers do not have to know r_min. Going the other way,
-    picking a point count that lands near a target step, means dividing the
-    span log(r_max / r_min) by that step, which silently needs the same r_min
-    owned here. A caller keeping its own copy of that constant gets no error
-    when the two drift apart, just a mesh at the wrong step.
-
-    The point count is floored, so the step delivered is never finer than the
-    one asked for and overshoots by at most one point's worth. Halving `step`
-    therefore always refines, which is what a refinement pair needs.
+    Floored, so the delivered step is never finer than asked; halving `step`
+    always refines, with endpoints fixed across the pair.
     """
     if z < 1:
         raise ValueError(f"Z must be >= 1, got {z}")
@@ -344,33 +259,12 @@ def display_window(
     floor: float = 1e-4,
     margin: float = 1.25,
 ) -> float:
-    """The outer radius worth drawing, for a curve solved on a much larger box.
-    ... (presentational choice: VISUAL_LIBERTY tier — it decides which samples
-    get drawn, never an energy; the caller ships this radius as the field's
-    own `grid` so the axis stays honest).
+    """Outer radius worth drawing for a curve solved on a much larger box.
 
-    A solve box is sized so the eigenvalue is not squeezed by its own wall, and
-    for an inner orbital that box is enormous compared with the orbital.
-    Argon's 1s is solved out to 160 bohr and is finished by 0.4: resampled
-    uniformly across the box for display, a 400-point output grid put exactly
-    ONE sample on the orbital, drawing a two-point straight line where a 1s
-    should be. Neon's 1s got two points, argon's 3p four. The solver had 48000
-    points and was right; only the picture was wrong.
-
-    So the output grid is windowed and the solve box left alone. Nothing here
-    touches an energy: `r_max` in the solvers stays exactly where it was, which
-    matters because argon's 1s energy is worth about 2 hartree to that box
-    while the valence energies do not notice it at all. This decides which
-    samples get drawn, and drawing samples from a region where the function is
-    a ten-thousandth of its peak is not information.
-
-    The window is honest because the caller ships this radius as the field's
-    own `grid`, so the axis is labelled with the range it actually covers. A
-    window under a full-box label would be the dishonest version.
-
-    `floor` sits deliberately well below the 1e-3 the frontend uses to trim a
-    drawn curve: this one decides what data exists at all, so it keeps a decade
-    more tail than any display is going to want.
+    Presentational only (VISUAL_LIBERTY): decides which samples exist for
+    display, never an energy. The caller ships this radius as the field's own
+    `grid` so the axis stays honest. `floor` keeps a decade more tail than any
+    display trims (1e-4 vs the frontend's 1e-3).
     """
     if r.size == 0:
         return 0.0
@@ -382,6 +276,5 @@ def display_window(
     if above.size == 0:
         return float(r[-1])
     outer = float(r[above[-1]]) * margin
-    # Never go past the box, and never so tight that the peak sits on the frame.
     peak_r = float(r[int(np.argmax(density))])
     return float(min(max(outer, peak_r * 2.0), r[-1]))

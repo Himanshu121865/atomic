@@ -4,8 +4,7 @@ from atomic.constants import HARTREE_EV, FundamentalConstants
 
 
 def test_hartree_ev_matches_codata():
-    # CODATA vintage rides with scipy (2022 value shown); 1e-6 abs tolerance
-    # absorbs future CODATA revisions without silently accepting real bugs.
+    # 1e-6 absorbs CODATA revisions without hiding real bugs.
     assert abs(HARTREE_EV - 27.211386) < 1e-6
 
 

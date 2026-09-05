@@ -1,9 +1,7 @@
 """Phase-0 mesh tests: construction, guards, quadrature, bands.
 
-Deliberately imports nothing beyond `atomic.numerics.mesh` (plus numpy/scipy):
-`analytic.hydrogen` and Hartree-Fock do not exist yet, so the one eigenvalue
-check hardcodes the EXACT hydrogen 1s energy (-0.5 hartree) instead of
-importing it. Phase 2 will replace the hardcode with the analytic module.
+No `analytic`/`hf` imports exist yet: the eigenvalue check hardcodes E_1 =
+-0.5 Ha (Phase 2 replaces it with the analytic module).
 """
 
 import numpy as np
@@ -21,7 +19,7 @@ from atomic.numerics.mesh import (
 
 
 def ground_state_energy(mesh: RadialMesh, z: float = 1.0) -> float:
-    """Lowest eigenvalue of -1/2 d2/dr2 - Z/r on this mesh (l = 0)."""
+    """Lowest eigenvalue of -1/2 d2/dr2 - Z/r (l = 0)."""
     diag, offdiag = mesh.hamiltonian_bands(-z / mesh.r, 0)
     return float(
         eigh_tridiagonal(diag, offdiag, select="i", select_range=(0, 0), eigvals_only=True)[0]
@@ -29,7 +27,7 @@ def ground_state_energy(mesh: RadialMesh, z: float = 1.0) -> float:
 
 
 def blunt_wall(mesh: RadialMesh) -> RadialMesh:
-    """The same mesh with a plain hard wall at r_min (no ghost correction)."""
+    """Same mesh with a plain hard wall at r_min."""
     return RadialMesh(
         r=mesh.r, jacobian=mesh.jacobian, step=mesh.step,
         kinetic_diag=mesh.kinetic_diag, kinetic_offdiag=mesh.kinetic_offdiag,
@@ -55,8 +53,7 @@ class TestUniformMesh:
         assert mesh.integrate(f) == pytest.approx(np.trapezoid(f, mesh.r), rel=1e-15)
 
     def test_wall_correction_vanishes_on_the_origin(self):
-        """The uniform wall IS the origin, where P is exactly 0: the ghost
-        correction must not perturb it at all."""
+        """Wall IS the origin here, so the ghost correction must change nothing."""
         mesh = uniform_mesh(30.0, 500)
         v = -1.0 / mesh.r
         diag, _ = mesh.hamiltonian_bands(v, 0)
@@ -99,8 +96,7 @@ class TestBandsAndTransforms:
             mesh.hamiltonian_bands(np.ones(50), 0)
 
     def test_ghost_correction_buys_two_orders(self):
-        """Deleting the correction must make the answer measurably worse —
-        that is what stops it being cargo cult."""
+        """Deleting the correction must make things worse, or it is cargo cult."""
         mesh = exponential_mesh(1e-2, 60.0, 800)
         want = 0.5
         assert abs(ground_state_energy(mesh) + want) / want < (
@@ -108,9 +104,7 @@ class TestBandsAndTransforms:
         )
 
     def test_hydrogen_1s_matches_the_exact_value(self):
-        """EXACT E_1 = -0.5 hartree, hardcoded: the analytic module lands in
-        Phase 1. The mesh claims ~2e-6 relative at this resolution; 5e-6 leaves
-        margin for BLAS vintage without accepting a real bug."""
+        """Hardcoded E_1 with BLAS margin; Phase 2 swaps in the analytic module."""
         got = ground_state_energy(mesh_for_atom(1, 60.0, 1200))
         assert abs(got + 0.5) / 0.5 < 5e-6
 
