@@ -32,9 +32,8 @@ dependencies = [
     "scipy>=1.15",
     "fastapi>=0.115",
     "uvicorn>=0.30",
-    # uvicorn ships no websocket implementation of its own: without this,
-    # `/ws/jobs/{id}` 404s in production, and the pytest suite cannot catch it
-    # (Starlette's TestClient never reaches uvicorn). Only smoke_container.sh does.
+
+
     "websockets>=13",
     "matplotlib>=3.9",
 ]
@@ -61,4 +60,4 @@ src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
-ignore = ["E741"]  # physics convention: l = orbital angular momentum quantum number
+ignore = ["E741"]

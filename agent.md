@@ -38,11 +38,11 @@ curve-of-growth, thumbnail/{n}/{l}/{m}` + `POST jobs/sample|plane|isosurface|hf`
 
 ```bash
 conda env create -f environment.yml && conda activate atomic
-python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"  # where conda is missing
-source .venv/bin/activate  # this machine has no conda; .venv is already installed
-atomic serve                      # needs web/dist built (Phase 3+)
+python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+source .venv/bin/activate
+atomic serve
 cd web && npm ci && npm run build && cd ..
-pytest && ruff check .            # backend
+pytest && ruff check .
 cd web && npm test && npm run build
 bash scripts/smoke_container.sh atomic:ci
 python scripts/convergence_study.py && python scripts/gen_luts.py

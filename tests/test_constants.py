@@ -4,7 +4,7 @@ from atomic.constants import HARTREE_EV, FundamentalConstants
 
 
 def test_hartree_ev_matches_codata():
-    # 1e-6 absorbs CODATA revisions without hiding real bugs.
+
     assert abs(HARTREE_EV - 27.211386) < 1e-6
 
 
@@ -27,7 +27,7 @@ def test_derived_hartree_matches_published_value():
 
 
 def test_counterfactual_universe_rescales():
-    # doubling e quadruples alpha (e^2) and shrinks the atom (a0 ~ 1/e^2)
+
     real = FundamentalConstants.codata()
     weird = FundamentalConstants(
         hbar=real.hbar, e=2 * real.e, m_e=real.m_e, eps0=real.eps0, c=real.c

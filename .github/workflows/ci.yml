@@ -19,5 +19,4 @@ jobs:
       - name: Test
         run: pytest -v --cov=atomic --cov-report=term
 
-  # web, container, and deploy jobs arrive with their phases (4, 14):
-  # no web/, Dockerfile, or fly.toml exists yet, so there is nothing to build.
+

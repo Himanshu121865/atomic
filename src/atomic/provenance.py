@@ -1,7 +1,3 @@
-"""Provenance: every boundary value carries how it was computed and how far it
-can be trusted. Nothing here quietly lies about physics.
-"""
-
 from dataclasses import dataclass, field
 from enum import Enum
 from numbers import Real
@@ -10,11 +6,11 @@ import numpy as np
 
 
 class Fidelity(Enum):
-    EXACT = "exact"                    # solved the stated model in closed form
-    NUMERICAL = "numerical"            # converged numerically, with the error quantified
-    APPROXIMATION = "approximation"    # an honest simplified model, assumptions stated
-    COUNTERFACTUAL = "counterfactual"  # physics deliberately altered, then solved rigorously
-    VISUAL_LIBERTY = "visual_liberty"  # a purely presentational choice, disclosed
+    EXACT = "exact"
+    NUMERICAL = "numerical"
+    APPROXIMATION = "approximation"
+    COUNTERFACTUAL = "counterfactual"
+    VISUAL_LIBERTY = "visual_liberty"
 
 
 def _require_nonempty_str(name: str, value: object) -> str:
@@ -41,8 +37,8 @@ class Provenance:
     fidelity: Fidelity
     method: str
     assumptions: tuple[str, ...] = field(default=())
-    error_estimate: float | None = None  # in the same unit as the quantity it describes
-    refinement: str | None = None        # what would make this more accurate
+    error_estimate: float | None = None
+    refinement: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.fidelity, Fidelity):
@@ -78,8 +74,8 @@ class Quantity:
         v = float(self.value)
         if np.isnan(v):
             raise ValueError("value must not be NaN (use inf for unbounded, never silence)")
-        # inf is allowed: e.g. infinite emitter mass for the m_over_M = 0
-        # idealization, infinite lifetime for a stable level.
+
+
         _require_nonempty_str("unit", self.unit)
         _require_nonempty_str("label", self.label)
         if not isinstance(self.provenance, Provenance):
@@ -91,7 +87,6 @@ class Quantity:
 
 @dataclass(frozen=True)
 class Field:
-    """An array-valued physical quantity: samples of a function on a 1-D grid."""
 
     values: np.ndarray
     grid: np.ndarray
