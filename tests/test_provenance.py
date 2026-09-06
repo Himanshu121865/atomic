@@ -75,6 +75,15 @@ def test_field_rejects_mismatched_grid_length():
         )
 
 
+def test_field_accepts_unsorted_sample_points():
+    sample = np.array([2.0, 0.5, 2.0, 1.0])
+    f = Field(
+        values=np.exp(-sample), grid=sample, unit="bohr^-3/2", grid_unit="bohr",
+        label="R_1,0", provenance=_prov(),
+    )
+    assert f.values.shape == (4,)
+
+
 def test_field_rejects_non_1d_grid():
     with pytest.raises(ValueError, match="1-D"):
         Field(

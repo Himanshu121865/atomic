@@ -111,8 +111,6 @@ class Field:
             raise ValueError("grid must not be empty")
         if not np.all(np.isfinite(grid)):
             raise ValueError("grid must be finite (no NaN or inf)")
-        if grid.size > 1 and not np.all(np.diff(grid) > 0.0):
-            raise ValueError("grid must be strictly increasing")
         if values.shape == ():
             raise ValueError("values must be an array, got a scalar")
         if values.shape[-1] != grid.shape[0]:
