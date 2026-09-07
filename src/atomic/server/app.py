@@ -23,6 +23,7 @@ from atomic.analytic.hydrogen import (
     radial_wavefunction,
     validate_quantum_numbers,
 )
+from atomic.analytic.wavefunction import evaluate_state
 from atomic.constants import BOHR_RADIUS_PM, HARTREE_EV
 from atomic.provenance import Fidelity, Field, Provenance, Quantity
 from atomic.server.jobs import Job, JobStatus, JobStore
@@ -130,6 +131,49 @@ class SampleMetaModel(BaseModel):
     model: str = "hydrogenic"
     provenance: ProvenanceModel
     channels: list[ChannelModel]
+
+
+class PlaneRequest(BaseModel):
+    n: int
+    l: int
+    m: int
+    quantity: Literal["density", "psi"] = "density"
+    basis: Literal["complex", "real"] = "complex"
+    system: str = "h"
+    resolution: int = 256
+
+
+@dataclasses.dataclass(frozen=True)
+class PlaneResult:
+    values: np.ndarray
+    quantity: str
+    unit: str
+    label: str
+    half_extent: float
+    n: int
+    l: int
+    m: int
+    basis: str
+    provenance: Provenance
+
+
+class PlaneMetaModel(BaseModel):
+    kind: Literal["plane"] = "plane"
+    resolution: int
+    dtype: str
+    layout: str
+    quantity: str
+    unit: str
+    label: str
+    half_extent: float
+    axis_unit: str
+    n: int
+    l: int
+    m: int
+    basis: str
+    system: str
+    model: str = "hydrogenic"
+    provenance: ProvenanceModel
 
 
 def _validate_state(n: int, l: int, m: int) -> None:
@@ -303,6 +347,53 @@ def create_app() -> FastAPI:
 
         return _dispatch(job, work)
 
+    @app.post("/api/jobs/plane", response_model=JobModel)
+    async def create_plane_job(req: PlaneRequest) -> JobModel:
+        _validate_state(req.n, req.l, req.m)
+        if not 16 <= req.resolution <= 1024:
+            raise HTTPException(status_code=422, detail="resolution must be in [16, 1024]")
+        sys_ = _resolve_system(req.system)
+        job = jobs.create()
+        app.state.job_systems[job.id] = req.system
+
+        def work(progress):
+            mu = sys_.mu_ratio.value
+            half = min(400.0, 60.0 * req.n * req.n / (sys_.Z * mu))
+            axis = np.linspace(-half, half, req.resolution)
+            xx, zz = np.meshgrid(axis, axis)
+            pos = np.stack(
+                [xx.ravel(), np.zeros(xx.size), zz.ravel()], axis=1
+            ).astype(np.float64)
+            progress(0.3)
+            psi = evaluate_state(
+                req.n, req.l, req.m, pos,
+                Z=sys_.Z, mu_ratio=mu, basis=req.basis,
+            ).values.reshape(req.resolution, req.resolution)
+            progress(0.7)
+            if req.quantity == "density":
+                values = (np.abs(psi) ** 2).astype(np.float32)
+                unit, label = "bohr^-3", "electron density on y=0"
+            else:
+                values = np.real(psi).astype(np.float32)
+                unit, label = "bohr^-3/2", "psi on y=0 (real there)"
+            progress(0.9)
+            provenance = Provenance(
+                fidelity=Fidelity.EXACT,
+                method=(
+                    f"psi_{req.n},{req.l},{req.m} evaluated on the y=0 plane "
+                    f"({req.resolution}x{req.resolution} grid)"
+                ),
+                assumptions=("closed-form evaluation at grid points",),
+            )
+            progress(1.0)
+            return PlaneResult(
+                values=values, quantity=req.quantity, unit=unit, label=label,
+                half_extent=half, n=req.n, l=req.l, m=req.m, basis=req.basis,
+                provenance=provenance,
+            )
+
+        return _dispatch(job, work)
+
     @app.get("/api/jobs/{job_id}", response_model=JobModel)
     def job_status(job_id: str) -> JobModel:
         job = jobs.get(job_id)
@@ -337,16 +428,31 @@ def create_app() -> FastAPI:
             channels=channels,
         )
 
-    @app.get("/api/jobs/{job_id}/meta", response_model=SampleMetaModel)
-    def job_meta(job_id: str) -> SampleMetaModel:
+    @app.get("/api/jobs/{job_id}/meta", response_model=SampleMetaModel | PlaneMetaModel)
+    def job_meta(job_id: str) -> SampleMetaModel | PlaneMetaModel:
         res = _finished_result(jobs, job_id)
         system_key = app.state.job_systems.get(job_id, "h")
+        if isinstance(res, PlaneResult):
+            return PlaneMetaModel(
+                resolution=res.values.shape[0], dtype="float32",
+                layout="row-major float32; row i = z ascending, col j = x ascending",
+                quantity=res.quantity, unit=res.unit, label=res.label,
+                half_extent=res.half_extent, axis_unit="bohr",
+                n=res.n, l=res.l, m=res.m, basis=res.basis, system=system_key,
+                provenance=ProvenanceModel.from_provenance(res.provenance),
+            )
         return _sample_meta(res, system_key)
 
     @app.get("/api/jobs/{job_id}/data")
     def job_data(job_id: str, channel: str | None = None) -> Response:
         res = _finished_result(jobs, job_id)
-        if (channel or "positions") == "positions":
+        if isinstance(res, PlaneResult):
+            if channel is not None:
+                raise HTTPException(
+                    status_code=422, detail="plane jobs have a single channel"
+                )
+            payload = res.values
+        elif (channel or "positions") == "positions":
             payload = res.cloud.positions
         elif channel == "density":
             payload = (np.abs(res.psi.values) ** 2).astype(np.float32)

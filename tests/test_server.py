@@ -153,6 +153,51 @@ def test_sample_job_validates_before_creating():
         assert r.status_code == 422
 
 
+def test_plane_job_lifecycle():
+    with TestClient(app) as client:
+        job_id = client.post(
+            "/api/jobs/plane",
+            json={"n": 3, "l": 1, "m": 0, "quantity": "density", "resolution": 32},
+        ).json()["id"]
+        job = _wait_done(client, job_id)
+        assert job["status"] == "done"
+        meta = client.get(f"/api/jobs/{job_id}/meta").json()
+        assert meta["kind"] == "plane"
+        assert meta["resolution"] == 32
+        assert meta["half_extent"] > 0
+        assert meta["unit"] == "bohr^-3"
+        data = client.get(f"/api/jobs/{job_id}/data").content
+        assert len(data) == 32 * 32 * 4
+        assert client.get(
+            f"/api/jobs/{job_id}/data", params={"channel": "density"}
+        ).status_code == 422
+
+
+def test_plane_job_psi_quantity():
+    with TestClient(app) as client:
+        job_id = client.post(
+            "/api/jobs/plane",
+            json={"n": 2, "l": 1, "m": 0, "quantity": "psi", "resolution": 16},
+        ).json()["id"]
+        _wait_done(client, job_id)
+        meta = client.get(f"/api/jobs/{job_id}/meta").json()
+        assert meta["quantity"] == "psi"
+        assert meta["unit"] == "bohr^-3/2"
+
+
+def test_plane_job_validates():
+    with TestClient(app) as client:
+        assert client.post(
+            "/api/jobs/plane", json={"n": 1, "l": 0, "m": 0, "resolution": 8}
+        ).status_code == 422
+        assert client.post(
+            "/api/jobs/plane", json={"n": 1, "l": 0, "m": 0, "quantity": "bogus"}
+        ).status_code == 422
+        assert client.post(
+            "/api/jobs/plane", json={"n": 1, "l": 1, "m": 0}
+        ).status_code == 422
+
+
 def test_unknown_job_is_404_and_unfinished_meta_is_409():
     with TestClient(app) as client:
         assert client.get("/api/jobs/nope").status_code == 404
