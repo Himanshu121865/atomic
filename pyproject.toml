@@ -39,7 +39,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-cov", "ruff"]
+dev = ["pytest>=8", "pytest-cov", "ruff", "httpx>=0.27"]
 
 [project.scripts]
 atomic = "atomic.cli:main"
