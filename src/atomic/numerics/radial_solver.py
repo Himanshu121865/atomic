@@ -1,0 +1,103 @@
+import dataclasses
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import numpy as np
+from scipy.linalg import eigh_tridiagonal
+
+from atomic.provenance import Fidelity, Provenance, Quantity
+
+
+@dataclass(frozen=True)
+class RadialSolution:
+    r: np.ndarray
+    u: np.ndarray
+    energies: tuple[Quantity, ...]
+    l: int
+    mu_ratio: float
+    provenance: Provenance
+
+
+def solve_radial(
+    potential: Callable[[np.ndarray], np.ndarray],
+    l: int = 0,
+    mu_ratio: float = 1.0,
+    r_max: float = 120.0,
+    n_points: int = 24000,
+    n_states: int = 3,
+) -> RadialSolution:
+    if l < 0:
+        raise ValueError(f"orbital quantum number l must be >= 0, got {l}")
+    if not mu_ratio > 0:
+        raise ValueError(f"reduced-mass ratio must be positive, got {mu_ratio}")
+    h = r_max / (n_points + 1)
+    r = h * np.arange(1, n_points + 1)
+    inv2m = 1.0 / (2.0 * mu_ratio)
+
+    v_eff = np.asarray(potential(r), dtype=float) + l * (l + 1) * inv2m / r**2
+    if not np.isfinite(v_eff).all():
+        raise ValueError("potential produced non-finite values on the radial grid")
+    diag = 2.0 * inv2m / h**2 + v_eff
+    offdiag = np.full(n_points - 1, -inv2m / h**2)
+
+    eigvals, eigvecs = eigh_tridiagonal(
+        diag, offdiag, select="i", select_range=(0, n_states - 1)
+    )
+    u = eigvecs.T.copy()
+
+    norms = np.sqrt(np.trapezoid(u**2, r, axis=1))
+    u /= norms[:, None]
+    for k in range(u.shape[0]):
+        first = np.argmax(np.abs(u[k]) > 0.01 * np.abs(u[k]).max())
+        if u[k][first] < 0:
+            u[k] = -u[k]
+
+    provenance = Provenance(
+        fidelity=Fidelity.NUMERICAL,
+        method="3-point finite-difference radial Hamiltonian (u = r R), scipy eigh_tridiagonal",
+        assumptions=(
+            f"a uniform grid: h={h:.3e} bohr, r_max={r_max:g} bohr, N={n_points}",
+            "Dirichlet boundaries u(0) = u(r_max) = 0",
+            "only the low-lying bound states are box-converged",
+        ),
+        refinement=(
+            "raise n_points or r_max, or call solve_radial_with_error to quantify the error"
+        ),
+    )
+    energies = tuple(
+        Quantity(
+            value=float(e),
+            unit="hartree",
+            label=f"E[{k}] (l={l})",
+            provenance=provenance,
+        )
+        for k, e in enumerate(eigvals)
+    )
+    return RadialSolution(
+        r=r, u=u, energies=energies, l=l, mu_ratio=mu_ratio, provenance=provenance
+    )
+
+
+def solve_radial_with_error(
+    potential: Callable[[np.ndarray], np.ndarray],
+    l: int = 0,
+    mu_ratio: float = 1.0,
+    r_max: float = 120.0,
+    n_points: int = 24000,
+    n_states: int = 3,
+) -> RadialSolution:
+    coarse = solve_radial(potential, l, mu_ratio, r_max, n_points, n_states)
+    fine = solve_radial(potential, l, mu_ratio, r_max, 2 * n_points, n_states)
+
+    energies = tuple(
+        dataclasses.replace(
+            q,
+            provenance=dataclasses.replace(
+                q.provenance,
+                error_estimate=abs(q.value - coarse.energies[k].value),
+                refinement="raise n_points further; this was estimated by grid-halving",
+            ),
+        )
+        for k, q in enumerate(fine.energies)
+    )
+    return dataclasses.replace(fine, energies=energies)
