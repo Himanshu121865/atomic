@@ -1,11 +1,21 @@
 import type {
+  ClassicalGhost,
+  ConstantsReport,
+  ForceLawResult,
   JobInfo,
   JobMeta,
   LevelsResponse,
   RadialResponse,
+  ScreenedLevels,
   StateResponse,
   SystemsResponse,
 } from "./types";
+
+export function isScreenedLevels(
+  body: LevelsResponse | ScreenedLevels,
+): body is ScreenedLevels {
+  return "orbitals" in body;
+}
 
 export type Basis = "complex" | "real";
 export type PlaneQuantity = "density" | "psi";
@@ -68,8 +78,47 @@ export function getRadial(
   return getJson(`/api/radial/${n}/${l}?system=${key(system)}${p}`);
 }
 
-export function getLevels(system: string, nMax: number): Promise<LevelsResponse> {
+export function getLevels(system: string, nMax: number): Promise<LevelsResponse | ScreenedLevels> {
   return getJson(`/api/levels?system=${key(system)}&n_max=${nMax}`);
+}
+
+export interface ConstMultipliers {
+  hbar: number;
+  e: number;
+  m_e: number;
+  eps0: number;
+  c: number;
+}
+
+export function getConstants(m: ConstMultipliers): Promise<ConstantsReport> {
+  return getJson(
+    `/api/constants?hbar=${m.hbar}&e=${m.e}&m_e=${m.m_e}&eps0=${m.eps0}&c=${m.c}`,
+  );
+}
+
+export function getClassical(system: string, n: number): Promise<ClassicalGhost> {
+  return getJson(`/api/classical?system=${key(system)}&n=${n}`);
+}
+
+export interface ForceLawParams {
+  system: string;
+  preset: string;
+  params: Record<string, number>;
+  l: number;
+  nStates?: number;
+  expr?: string;
+}
+
+export function getForceLaw(p: ForceLawParams): Promise<ForceLawResult> {
+  const q = new URLSearchParams({
+    system: p.system,
+    preset: p.preset,
+    l: String(p.l),
+    n_states: String(p.nStates ?? 4),
+  });
+  for (const [k, v] of Object.entries(p.params)) q.set(k, String(v));
+  if (p.expr !== undefined) q.set("expr", p.expr);
+  return getJson(`/api/forcelaw?${q.toString()}`);
 }
 
 export interface SampleParams {

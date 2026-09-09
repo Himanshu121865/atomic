@@ -74,6 +74,24 @@ export interface LevelsResponse {
   levels: LevelEntry[];
 }
 
+export interface ScreenedOrbital {
+  n: number;
+  l: number;
+  label: string;
+  occupancy: number;
+  energy: Quantity;
+  energy_ev: Quantity;
+}
+
+export interface ScreenedLevels {
+  system: SystemInfo;
+  config: string;
+  is_ground: boolean;
+  orbitals: ScreenedOrbital[];
+  total_energy: Quantity;
+  total_energy_ev: Quantity;
+}
+
 export interface RadialResponse {
   n: number;
   l: number;
@@ -134,3 +152,71 @@ export interface PlaneMeta {
 }
 
 export type JobMeta = SampleMeta | PlaneMeta;
+
+export interface DerivedObservable {
+  quantity: Quantity;
+  ratio: number;
+  changed: boolean;
+}
+
+export interface ConstantsReport {
+  alpha: DerivedObservable;
+  bohr_radius_pm: DerivedObservable;
+  hartree_ev: DerivedObservable;
+  altered: boolean;
+}
+
+export interface BohrOrbit {
+  n: number;
+  radius_bohr: Quantity;
+  radius_pm: Quantity;
+}
+
+export interface ClassicalGhost {
+  n: number;
+  system_key: string;
+  z: number;
+  orbits: BohrOrbit[];
+  r0_bohr: Quantity;
+  collapse_time_s: Quantity;
+  orbital_period_s: Quantity;
+  orbit_count: Quantity;
+}
+
+export interface ForceLawLevel {
+  radial_index: number;
+  energy: Quantity;
+  energy_ev: Quantity;
+  trusted: boolean;
+}
+
+export interface ReferenceItem {
+  label: string;
+  energy: Quantity;
+  energy_ev: Quantity;
+}
+
+export interface Reference {
+  kind: "levels" | "markers";
+  items: ReferenceItem[];
+}
+
+export interface PotentialCurve {
+  r: number[];
+  v_ev: number[];
+  provenance: Provenance;
+}
+
+export interface ForceLawResult {
+  preset: string;
+  params: Record<string, number>;
+  l: number;
+  z: number;
+  system: SystemInfo;
+  counterfactual: ForceLawLevel[];
+  bound_count: number;
+  requested_count: number;
+  reference: Reference;
+  potential_curve: PotentialCurve;
+  expression: string | null;
+}

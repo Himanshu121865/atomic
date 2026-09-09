@@ -16,6 +16,10 @@ useAppStore.setState(opening);
   if (settled.view === "cloud") void settled.sample();
   else if (settled.view === "plane") void settled.loadPlane();
   else if (settled.view === "radial") void settled.loadRadial();
+  else if (settled.view === "whatif") {
+    void settled.loadWhatIf();
+    void settled.loadGhost();
+  } else if (settled.view === "forcelaw") void settled.loadForceLaw();
   else void settled.loadLevels();
 }
 

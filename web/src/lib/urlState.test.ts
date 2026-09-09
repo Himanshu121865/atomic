@@ -4,6 +4,7 @@ import {
   parseAppUrl,
   serializeAppUrl,
   URL_DEFAULTS,
+  type UrlState,
 } from "./urlState";
 
 describe("parseAppUrl", () => {
@@ -43,6 +44,35 @@ describe("serializeAppUrl", () => {
 
   it("writes only what moved", () => {
     expect(serializeAppUrl({ ...URL_DEFAULTS, n: 2, view: "levels" })).toBe("?n=2&view=levels");
+  });
+
+  it("round-trips lab multipliers and force-law settings", () => {
+    const state: UrlState = {
+      ...URL_DEFAULTS,
+      labConst: { ...URL_DEFAULTS.labConst, e: 2 },
+      forcePreset: "yukawa",
+      forceParams: { lambda: 6 },
+      forceL: 1,
+    };
+    const back = parseAppUrl(serializeAppUrl({ ...state }));
+    expect(back).toMatchObject({
+      labConst: { hbar: 1, e: 2, m_e: 1, eps0: 1, c: 1 },
+      forcePreset: "yukawa",
+      forceParams: { lambda: 6 },
+      forceL: 1,
+    });
+  });
+
+  it("reads custom expressions only for the custom preset", () => {
+    expect(parseAppUrl("?preset=custom&expr=-1%2Fr")).toMatchObject({
+      forcePreset: "custom",
+      forceExpr: "-1/r",
+    });
+    expect(parseAppUrl("?expr=-1%2Fr").forceExpr).toBeUndefined();
+  });
+
+  it("clamps lab multipliers into range", () => {
+    expect(parseAppUrl("?e=99").labConst).toMatchObject({ e: 4 });
   });
 });
 

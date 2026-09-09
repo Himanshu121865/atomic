@@ -414,3 +414,72 @@ input[type="range"] {
 .legend {
   font-family: var(--mono);
 }
+
+.readouts-head {
+  margin: 0.6rem 0 0.2rem;
+}
+
+.readouts {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.readout-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  font-size: 0.92rem;
+  border-bottom: 1px solid #141a20;
+  padding-bottom: 0.35rem;
+}
+
+.readout-row dt {
+  color: var(--dim);
+}
+
+.readout-row dd {
+  margin: 0;
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.readout-ratio {
+  color: var(--dim);
+}
+
+.readout-ratio.changed {
+  color: #ffd166;
+}
+
+.const-sliders {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.counterfactual-banner {
+  border: 1px solid #c792ea;
+  color: #c792ea;
+  border-radius: 8px;
+  padding: 0.45rem 0.7rem;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+}
+
+button.primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #04070a;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  align-self: flex-start;
+}
+
+button.primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}

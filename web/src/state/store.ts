@@ -3,23 +3,33 @@ import {
   createPlaneJob,
   createSampleJob,
   getChannel,
+  getClassical,
+  getConstants,
+  getForceLaw,
   getJobMeta,
   getLevels,
   getRadial,
   getState,
   getSystems,
   type Basis,
+  type ConstMultipliers,
   type PlaneQuantity,
 } from "../api/client";
 import type {
+  ClassicalGhost,
+  ConstantsReport,
+  ForceLawResult,
   JobMeta,
   LevelsResponse,
   PlaneMeta,
   RadialResponse,
   SampleMeta,
+  ScreenedLevels,
   StateResponse,
   SystemInfo,
 } from "../api/types";
+import type { ForcePreset } from "../lib/forceLaw";
+import { DEFAULT_EXPR, defaultParams } from "../lib/forceLaw";
 import type { ColorMode, ViewMode } from "../lib/urlState";
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
@@ -51,7 +61,18 @@ interface AppState {
   plane: PlaneData | null;
   planeStatus: LoadStatus;
   radial: RadialResponse | null;
-  levels: LevelsResponse | null;
+  levels: LevelsResponse | ScreenedLevels | null;
+  labConst: ConstMultipliers;
+  whatif: ConstantsReport | null;
+  whatifStatus: LoadStatus;
+  ghost: ClassicalGhost | null;
+  ghostStatus: LoadStatus;
+  forcePreset: ForcePreset;
+  forceParams: Record<string, number>;
+  forceL: number;
+  forceExpr: string;
+  forceLaw: ForceLawResult | null;
+  forceStatus: LoadStatus;
   setQuantumNumbers: (n: number, l: number, m: number) => void;
   setSystem: (system: string) => void;
   setBasis: (basis: Basis) => void;
@@ -65,6 +86,14 @@ interface AppState {
   loadPlane: () => Promise<void>;
   loadRadial: () => Promise<void>;
   loadLevels: () => Promise<void>;
+  setLabConst: (partial: Partial<ConstMultipliers>) => void;
+  loadWhatIf: () => Promise<void>;
+  loadGhost: () => Promise<void>;
+  setForcePreset: (preset: ForcePreset) => void;
+  setForceParam: (name: string, value: number) => void;
+  setForceL: (l: number) => void;
+  setForceExpr: (expr: string) => void;
+  loadForceLaw: () => Promise<void>;
 }
 
 const INVALIDATED = {
@@ -80,6 +109,8 @@ const INVALIDATED = {
   planeStatus: "idle",
   radial: null,
   levels: null,
+  ghost: null,
+  ghostStatus: "idle",
 } as const;
 
 let seedCounter = 1;
@@ -123,6 +154,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
   planeStatus: "idle",
   radial: null,
   levels: null,
+  labConst: { hbar: 1, e: 1, m_e: 1, eps0: 1, c: 1 },
+  whatif: null,
+  whatifStatus: "idle",
+  ghost: null,
+  ghostStatus: "idle",
+  forcePreset: "powerlaw",
+  forceParams: defaultParams("powerlaw"),
+  forceL: 0,
+  forceExpr: DEFAULT_EXPR,
+  forceLaw: null,
+  forceStatus: "idle",
 
   setQuantumNumbers: (n, l, m) => set({ n, l, m, ...INVALIDATED }),
   setSystem: (system) => set({ system, ...INVALIDATED }),
@@ -198,5 +240,54 @@ export const useAppStore = create<AppState>()((set, get) => ({
   loadLevels: async () => {
     const s = get();
     set({ levels: await getLevels(s.system, 6) });
+  },
+
+  setLabConst: (partial) => {
+    const labConst = { ...get().labConst, ...partial };
+    set({ labConst, whatif: null, whatifStatus: "idle" });
+  },
+
+  loadWhatIf: async () => {
+    const s = get();
+    set({ whatifStatus: "loading" });
+    try {
+      set({ whatif: await getConstants(s.labConst), whatifStatus: "ready" });
+    } catch {
+      set({ whatifStatus: "error" });
+    }
+  },
+
+  loadGhost: async () => {
+    const s = get();
+    set({ ghostStatus: "loading" });
+    try {
+      set({ ghost: await getClassical(s.system, s.n), ghostStatus: "ready" });
+    } catch {
+      set({ ghostStatus: "error" });
+    }
+  },
+
+  setForcePreset: (forcePreset) =>
+    set({ forcePreset, forceParams: defaultParams(forcePreset), forceLaw: null, forceStatus: "idle" }),
+  setForceParam: (name, value) =>
+    set((s) => ({ forceParams: { ...s.forceParams, [name]: value } })),
+  setForceL: (forceL) => set({ forceL }),
+  setForceExpr: (forceExpr) => set({ forceExpr }),
+
+  loadForceLaw: async () => {
+    const s = get();
+    set({ forceStatus: "loading" });
+    try {
+      const forceLaw = await getForceLaw({
+        system: s.system,
+        preset: s.forcePreset,
+        params: s.forceParams,
+        l: s.forceL,
+        expr: s.forcePreset === "custom" ? s.forceExpr : undefined,
+      });
+      set({ forceLaw, forceStatus: "ready" });
+    } catch {
+      set({ forceStatus: "error" });
+    }
   },
 }));

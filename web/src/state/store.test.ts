@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isScreenedLevels } from "../api/client";
 import { useAppStore } from "./store";
 
 const SYSTEM = {
@@ -69,6 +70,32 @@ function stubFetch() {
       if (url.startsWith("/api/radial/")) {
         return json({ n: 1, l: 0, system: SYSTEM });
       }
+      if (url.startsWith("/api/constants")) {
+        const obs = (value: number) => ({
+          quantity: { value, unit: "u", label: "o", provenance: null },
+          ratio: 1,
+          changed: false,
+        });
+        return json({ alpha: obs(0.0073), bohr_radius_pm: obs(52.9), hartree_ev: obs(27.2), altered: false });
+      }
+      if (url.startsWith("/api/classical")) {
+        const q = (value: number) => ({ value, unit: "u", label: "g", provenance: null });
+        return json({
+          n: 1, system_key: "h", z: 1,
+          orbits: [{ n: 1, radius_bohr: q(1), radius_pm: q(52.9) }],
+          r0_bohr: q(1), collapse_time_s: q(1e-11),
+          orbital_period_s: q(1e-16), orbit_count: q(2e5),
+        });
+      }
+      if (url.startsWith("/api/forcelaw")) {
+        return json({
+          preset: "powerlaw", params: { p: 1 }, l: 0, z: 1, system: SYSTEM,
+          counterfactual: [], bound_count: 0, requested_count: 4,
+          reference: { kind: "levels", items: [] },
+          potential_curve: { r: [], v_ev: [], provenance: null },
+          expression: null,
+        });
+      }
       if (url === "/api/jobs/sample" && method === "POST") {
         return json({ id: "j1", status: "pending", progress: 0, error: null });
       }
@@ -113,7 +140,9 @@ describe("loaders", () => {
     await s.loadRadial();
     expect(useAppStore.getState().radial?.n).toBe(1);
     await s.loadLevels();
-    expect(useAppStore.getState().levels?.n_max).toBe(6);
+    const lv = useAppStore.getState().levels;
+    if (lv === null || isScreenedLevels(lv)) throw new Error("expected hydrogenic levels");
+    expect(lv.n_max).toBe(6);
   });
 
   it("samples a cloud through the job lifecycle", async () => {
@@ -153,5 +182,33 @@ describe("loaders", () => {
     const s = useAppStore.getState();
     expect(s.status).toBe("error");
     expect(s.error).toContain("down");
+  });
+
+  it("loads the what-if lab and the ghost", async () => {
+    const s = useAppStore.getState();
+    await s.loadWhatIf();
+    expect(useAppStore.getState().whatif?.altered).toBe(false);
+    expect(useAppStore.getState().whatifStatus).toBe("ready");
+    await s.loadGhost();
+    expect(useAppStore.getState().ghost?.z).toBe(1);
+    useAppStore.getState().setLabConst({ e: 2 });
+    expect(useAppStore.getState().labConst.e).toBe(2);
+    expect(useAppStore.getState().whatif).toBeNull();
+  });
+
+  it("loads force laws and tracks params", async () => {
+    const s = useAppStore.getState();
+    await s.loadForceLaw();
+    expect(useAppStore.getState().forceLaw?.preset).toBe("powerlaw");
+    expect(useAppStore.getState().forceStatus).toBe("ready");
+    useAppStore.getState().setForcePreset("yukawa");
+    expect(useAppStore.getState().forceParams).toEqual({ lambda: 3 });
+    expect(useAppStore.getState().forceLaw).toBeNull();
+    useAppStore.getState().setForceParam("lambda", 6);
+    expect(useAppStore.getState().forceParams.lambda).toBe(6);
+    useAppStore.getState().setForceL(1);
+    expect(useAppStore.getState().forceL).toBe(1);
+    useAppStore.getState().setForceExpr("-1/r");
+    expect(useAppStore.getState().forceExpr).toBe("-1/r");
   });
 });
