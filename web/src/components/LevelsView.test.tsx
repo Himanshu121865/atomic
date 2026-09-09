@@ -1,8 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { Provenance, SystemInfo } from "../api/types";
+import { isScreenedLevels } from "../api/client";
+import type { Provenance, ScreenedLevels, SystemInfo } from "../api/types";
 import { useAppStore } from "../state/store";
-import { LevelsLadder, LevelsView } from "./LevelsView";
+import { LevelsLadder, LevelsView, ScreenedLadder } from "./LevelsView";
 
 const PROV: Provenance = {
   fidelity: "exact",
@@ -66,5 +67,33 @@ describe("LevelsView", () => {
     expect(onPick).not.toHaveBeenCalled();
     useAppStore.getState().setQuantumNumbers(2, 1, 0);
     expect(useAppStore.getState().n).toBe(2);
+  });
+});
+
+describe("ScreenedLadder", () => {
+  const levels: ScreenedLevels = {
+    system: { ...SYS },
+    config: "1s2",
+    is_ground: true,
+    orbitals: [
+      { n: 1, l: 0, label: "1s2", occupancy: 2, energy: qty(-24), energy_ev: qty(-24) },
+      { n: 2, l: 0, label: "2s0", occupancy: 0, energy: qty(-1), energy_ev: qty(-1) },
+    ],
+    total_energy: qty(-48),
+    total_energy_ev: qty(-48),
+  };
+
+  it("draws filled and virtual rungs", () => {
+    const html = renderToStaticMarkup(<ScreenedLadder levels={levels} />);
+    expect(html).toContain("1s2");
+    expect(html).toContain("virtual");
+    expect(html).toContain("ionization limit");
+  });
+
+  it("discriminates screened payloads", () => {
+    expect(isScreenedLevels(levels)).toBe(true);
+    expect(
+      isScreenedLevels({ system: { ...SYS }, n_max: 2, levels: [] }),
+    ).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { scaleLinear } from "d3-scale";
 import { useEffect } from "react";
-import type { LevelsResponse } from "../api/types";
+import { isScreenedLevels } from "../api/client";
+import type { LevelsResponse, ScreenedLevels } from "../api/types";
 import { useAppStore } from "../state/store";
 import { Badge } from "./Badge";
 import { Disclosure } from "./Disclosure";
@@ -71,6 +72,49 @@ export function LevelsLadder({
   );
 }
 
+export function ScreenedLadder({ levels }: { levels: ScreenedLevels }) {
+  const es = levels.orbitals.map((o) => o.energy_ev.value);
+  const eMin = Math.min(...es);
+  const y = scaleLinear([eMin, 0], [H - 40, 24]);
+  const rungX1 = 90;
+  const rungX2 = 340;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" className="levels-svg">
+      <line x1={rungX1} x2={rungX2} y1={y(0)} y2={y(0)} className="zero" />
+      <text x={rungX2 + 30} y={y(0)} dy="0.32em" className="tick">
+        0: ionization limit
+      </text>
+      {levels.orbitals.map((o) => {
+        const yr = y(o.energy_ev.value);
+        const filled = o.occupancy > 0;
+        return (
+          <g key={`${o.n}-${o.l}`}>
+            <line
+              x1={rungX1} x2={rungX2} y1={yr} y2={yr}
+              className="rung"
+              strokeWidth={filled ? 3 : 1.5}
+              strokeDasharray={filled ? undefined : "4 4"}
+              opacity={filled ? 1 : 0.5}
+            />
+            <text
+              x={rungX1 - 32} y={yr} dy="0.32em"
+              textAnchor="end" className="tick"
+            >
+              {o.label}
+              {filled ? <tspan dy="-0.5em">{o.occupancy}</tspan> : ""}
+            </text>
+            <text x={rungX2 + 30} y={yr} dy="0.32em" className="tick">
+              {o.energy_ev.value.toFixed(2)} eV
+              {filled ? "" : " · virtual"}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export function LevelsView() {
   const { n, l, system, levels, loadLevels, setQuantumNumbers } = useAppStore();
   useEffect(() => {
@@ -81,6 +125,31 @@ export function LevelsView() {
     return (
       <div className="view-wrap">
         <p className="hint-block">Loading the levels…</p>
+      </div>
+    );
+  }
+
+  if (isScreenedLevels(levels)) {
+    return (
+      <div className="view-wrap">
+        <ViewIntro
+          lead={{
+            title: `Energy levels of ${levels.system.name}`,
+            lead:
+              "Each rung is one subshell in a fitted central field. " +
+              "Solid rungs hold electrons, dashed ones are empty.",
+          }}
+          badge={<Badge provenance={levels.orbitals[0].energy.provenance} />}
+        >
+          <p className="view-intro-config">
+            {levels.config}
+            {levels.is_ground ? " · ground configuration" : " · excited, not the ground state"}
+          </p>
+        </ViewIntro>
+        <ScreenedLadder levels={levels} />
+        <p className="caption">
+          Total energy {levels.total_energy_ev.value.toFixed(2)} eV.
+        </p>
       </div>
     );
   }
