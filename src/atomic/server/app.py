@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
@@ -23,16 +23,40 @@ from atomic.analytic.hydrogen import (
     radial_wavefunction,
     validate_quantum_numbers,
 )
-from atomic.analytic.wavefunction import evaluate_state
+from atomic.analytic.wavefunction import WavefunctionValues, evaluate_state
+from atomic.atoms import (
+    ATOM_KEYS,
+    SUBSHELL_LABELS,
+    atom_for_key,
+    aufbau_configuration,
+    format_config,
+    has_gsz_parameters,
+    is_atom_key,
+)
+from atomic.classical import classical_ghost
 from atomic.constants import BOHR_RADIUS_PM, HARTREE_EV
+from atomic.constants_lab import analyze_constants
+from atomic.numerics.expression import ExpressionError
+from atomic.numerics.force_law import PRESETS, force_law_levels, free_form_levels
+from atomic.plane import PlaneGrid, plane_grid, screened_plane_grid
 from atomic.provenance import Fidelity, Field, Provenance, Quantity
+from atomic.sampling import SampleCloud, sample_density, sample_screened_density
+from atomic.screened_atom import (
+    evaluate_screened_state,
+    screened_radial,
+    solve_screened_atom,
+)
 from atomic.server.jobs import Job, JobStatus, JobStore
-from atomic.server.sample_hydrogen import SampleJobResult, sample_hydrogen
 from atomic.server.schemas import (
     ChannelModel,
+    ClassicalGhostModel,
+    ConstantsReportModel,
     FieldModel,
+    ForceLawModel,
     ProvenanceModel,
     QuantityModel,
+    ScreenedLevelsModel,
+    ScreenedOrbitalModel,
     SystemModel,
 )
 from atomic.systems import get_system, hydrogen_like, list_systems
@@ -144,17 +168,9 @@ class PlaneRequest(BaseModel):
 
 
 @dataclasses.dataclass(frozen=True)
-class PlaneResult:
-    values: np.ndarray
-    quantity: str
-    unit: str
-    label: str
-    half_extent: float
-    n: int
-    l: int
-    m: int
-    basis: str
-    provenance: Provenance
+class SampleJobResult:
+    cloud: SampleCloud
+    psi: WavefunctionValues
 
 
 class PlaneMetaModel(BaseModel):
@@ -198,6 +214,20 @@ def _resolve_system(key: str):
         ) from None
 
 
+def _screened_element(key: str):
+    element = atom_for_key(key)
+    if not has_gsz_parameters(element.z):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{element.name} has no published GSZ screening parameters: "
+                f"Szydlik and Green (1974) tabulate neutral He to P and Ar "
+                f"and skip Z = 16 and 17."
+            ),
+        )
+    return element
+
+
 def _to_ev(q: Quantity) -> Quantity:
     return Quantity(
         value=q.value * HARTREE_EV,
@@ -239,7 +269,13 @@ def create_app() -> FastAPI:
     _configure_logging()
     app = FastAPI(title="atomic", version=atomic.__version__)
     app.state.job_systems = {}
-    jobs = JobStore()
+    app.state.job_models = {}
+
+    def _forget_job(job_id: str) -> None:
+        app.state.job_systems.pop(job_id, None)
+        app.state.job_models.pop(job_id, None)
+
+    jobs = JobStore(on_evict=_forget_job)
     app.state.jobs = jobs
     app.state.executor = ThreadPoolExecutor(
         max_workers=_job_worker_count(), thread_name_prefix="atomic-job"
@@ -259,7 +295,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/systems", response_model=SystemsResponse)
     def systems() -> SystemsResponse:
-        return SystemsResponse(systems=[SystemModel.from_system(s) for s in list_systems()])
+        hydrogenic = [SystemModel.from_system(s) for s in list_systems()]
+        screened = [
+            SystemModel.from_atom(
+                atom_for_key(k), atom_for_key(k).z,
+                f"{atom_for_key(k).name}: GSZ screened central-field model (APPROXIMATION).",
+            )
+            for k in ATOM_KEYS if has_gsz_parameters(atom_for_key(k).z)
+        ]
+        return SystemsResponse(systems=hydrogenic + screened)
 
     @app.get("/api/state/{n}/{l}/{m}", response_model=StateResponse)
     def state(n: int, l: int, m: int, system: str = "h") -> StateResponse:
@@ -280,10 +324,34 @@ def create_app() -> FastAPI:
             angular_nodes=l,
         )
 
-    @app.get("/api/levels", response_model=LevelsResponse)
-    def levels(system: str = "h", n_max: int = 6) -> LevelsResponse:
+    @app.get("/api/levels", response_model=LevelsResponse | ScreenedLevelsModel)
+    def levels(system: str = "h", n_max: int = 6) -> LevelsResponse | ScreenedLevelsModel:
         if not 1 <= n_max <= 20:
             raise HTTPException(status_code=422, detail="n_max must be in [1, 20]")
+        if is_atom_key(system):
+            element = _screened_element(system)
+            result = solve_screened_atom(
+                element.z, element.z, aufbau_configuration(element.z)
+            )
+            return ScreenedLevelsModel(
+                system=SystemModel.from_atom(
+                    element, element.z, f"{element.name}: GSZ screened central-field model",
+                ),
+                config=format_config(result.config),
+                is_ground=result.is_ground,
+                orbitals=[
+                    ScreenedOrbitalModel(
+                        n=o.n, l=o.l,
+                        label=f"{o.n}{SUBSHELL_LABELS[o.l]}{o.occupancy}",
+                        occupancy=o.occupancy,
+                        energy=QuantityModel.from_quantity(o.energy),
+                        energy_ev=QuantityModel.from_quantity(_to_ev(o.energy)),
+                    )
+                    for o in result.orbitals
+                ],
+                total_energy=QuantityModel.from_quantity(result.total_energy),
+                total_energy_ev=QuantityModel.from_quantity(_to_ev(result.total_energy)),
+            )
         sys_ = _resolve_system(system)
         mu = sys_.mu_ratio.value
         entries = []
@@ -304,6 +372,17 @@ def create_app() -> FastAPI:
         _validate_state(n, l, 0)
         if not 50 <= points <= 2000:
             raise HTTPException(status_code=422, detail="points must be in [50, 2000]")
+        if is_atom_key(system):
+            element = _screened_element(system)
+            rw, prob = screened_radial(element.z, element.z, n, l, points=points)
+            return RadialResponse(
+                n=n, l=l,
+                system=SystemModel.from_atom(
+                    element, element.z, f"{element.name}: GSZ screened central-field model",
+                ),
+                r_wavefunction=FieldModel.from_field(rw),
+                radial_probability=FieldModel.from_field(prob),
+            )
         sys_ = _resolve_system(system)
         mu = sys_.mu_ratio.value
         r_max = min(400.0, 60.0 * n * n / (sys_.Z * mu))
@@ -328,22 +407,114 @@ def create_app() -> FastAPI:
             radial_probability=FieldModel.from_field(prob),
         )
 
+    @app.get("/api/constants", response_model=ConstantsReportModel)
+    def constants_endpoint(
+        hbar: float = 1.0, e: float = 1.0, m_e: float = 1.0,
+        eps0: float = 1.0, c: float = 1.0,
+    ) -> ConstantsReportModel:
+        for name, mult in (("hbar", hbar), ("e", e), ("m_e", m_e),
+                           ("eps0", eps0), ("c", c)):
+            if not 0.25 <= mult <= 4.0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{name} multiplier must be in [0.25, 4], got {mult}",
+                )
+        return ConstantsReportModel.from_report(
+            analyze_constants(hbar=hbar, e=e, m_e=m_e, eps0=eps0, c=c)
+        )
+
+    @app.get("/api/classical", response_model=ClassicalGhostModel)
+    def classical_endpoint(system: str = "h", n: int = 1) -> ClassicalGhostModel:
+        if n < 1:
+            raise HTTPException(status_code=422, detail=f"n must be >= 1, got {n}")
+        sys_ = _resolve_system(system)
+        return ClassicalGhostModel.from_ghost(classical_ghost(n=n, system=sys_))
+
+    @app.get("/api/forcelaw", response_model=ForceLawModel)
+    def forcelaw_endpoint(
+        preset: str = "powerlaw",
+        l: int = 0,
+        system: str = "h",
+        n_states: int = 4,
+        p: float = 1.0,
+        lambda_: float = Query(default=3.0, alias="lambda"),
+        omega: float = 0.3,
+        v0: float = 2.0,
+        a: float = 3.0,
+        core: float = 0.2,
+        expr: str | None = None,
+    ) -> ForceLawModel:
+        if l < 0:
+            raise HTTPException(status_code=422, detail=f"l must be >= 0, got {l}")
+        if not 1 <= n_states <= 8:
+            raise HTTPException(
+                status_code=422, detail=f"n_states must be in [1, 8], got {n_states}"
+            )
+        sys_ = _resolve_system(system)
+
+        if preset == "custom":
+            if not expr or not expr.strip():
+                raise HTTPException(status_code=422, detail="custom preset requires 'expr'")
+            try:
+                result = free_form_levels(expr, l=l, system=sys_, n_states=n_states)
+            except (ExpressionError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        else:
+            if preset not in PRESETS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"unknown preset {preset!r}; known: {sorted(PRESETS)}",
+                )
+            supplied = {
+                "p": p, "lambda": lambda_, "omega": omega, "v0": v0, "a": a, "core": core,
+            }
+            params = {spec.name: supplied[spec.name] for spec in PRESETS[preset].params}
+            try:
+                result = force_law_levels(preset, params, l=l, system=sys_, n_states=n_states)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return ForceLawModel.from_result(result, SystemModel.from_system(sys_), _to_ev)
+
     @app.post("/api/jobs/sample", response_model=JobModel)
     async def create_sample_job(req: SampleRequest) -> JobModel:
         _validate_state(req.n, req.l, req.m)
-        sys_ = _resolve_system(req.system)
         job = jobs.create()
         app.state.job_systems[job.id] = req.system
 
+        if is_atom_key(req.system):
+            element = _screened_element(req.system)
+            app.state.job_models[job.id] = "screened"
+
+            def work(progress):
+                cloud = sample_screened_density(
+                    element.z, element.z, req.n, req.l, req.m, req.count,
+                    seed=req.seed, progress=lambda f: progress(0.9 * f), basis=req.basis,
+                )
+                psi = evaluate_screened_state(
+                    element.z, element.z, req.n, req.l, req.m,
+                    cloud.positions.astype(np.float64), basis=req.basis,
+                )
+                progress(1.0)
+                return SampleJobResult(cloud=cloud, psi=psi)
+
+            return _dispatch(job, work)
+
+        sys_ = _resolve_system(req.system)
+        app.state.job_models[job.id] = "hydrogenic"
+
         def work(progress):
-            result = sample_hydrogen(
+            cloud = sample_density(
                 req.n, req.l, req.m, req.count,
                 Z=sys_.Z, mu_ratio=sys_.mu_ratio.value,
-                seed=req.seed, basis=req.basis,
-                progress=lambda f: progress(0.95 * f),
+                seed=req.seed, progress=lambda f: progress(0.9 * f), basis=req.basis,
+            )
+            psi = evaluate_state(
+                req.n, req.l, req.m, cloud.positions.astype(np.float64),
+                Z=sys_.Z, mu_ratio=sys_.mu_ratio.value, basis=req.basis,
             )
             progress(1.0)
-            return result
+            return SampleJobResult(cloud=cloud, psi=psi)
 
         return _dispatch(job, work)
 
@@ -352,44 +523,30 @@ def create_app() -> FastAPI:
         _validate_state(req.n, req.l, req.m)
         if not 16 <= req.resolution <= 1024:
             raise HTTPException(status_code=422, detail="resolution must be in [16, 1024]")
-        sys_ = _resolve_system(req.system)
         job = jobs.create()
         app.state.job_systems[job.id] = req.system
 
+        if is_atom_key(req.system):
+            element = _screened_element(req.system)
+            app.state.job_models[job.id] = "screened"
+
+            def work(progress):
+                return screened_plane_grid(
+                    element.z, element.z, req.n, req.l, req.m,
+                    quantity=req.quantity, basis=req.basis,
+                    resolution=req.resolution, progress=progress,
+                )
+
+            return _dispatch(job, work)
+
+        sys_ = _resolve_system(req.system)
+        app.state.job_models[job.id] = "hydrogenic"
+
         def work(progress):
-            mu = sys_.mu_ratio.value
-            half = min(400.0, 60.0 * req.n * req.n / (sys_.Z * mu))
-            axis = np.linspace(-half, half, req.resolution)
-            xx, zz = np.meshgrid(axis, axis)
-            pos = np.stack(
-                [xx.ravel(), np.zeros(xx.size), zz.ravel()], axis=1
-            ).astype(np.float64)
-            progress(0.3)
-            psi = evaluate_state(
-                req.n, req.l, req.m, pos,
-                Z=sys_.Z, mu_ratio=mu, basis=req.basis,
-            ).values.reshape(req.resolution, req.resolution)
-            progress(0.7)
-            if req.quantity == "density":
-                values = (np.abs(psi) ** 2).astype(np.float32)
-                unit, label = "bohr^-3", "electron density on y=0"
-            else:
-                values = np.real(psi).astype(np.float32)
-                unit, label = "bohr^-3/2", "psi on y=0 (real there)"
-            progress(0.9)
-            provenance = Provenance(
-                fidelity=Fidelity.EXACT,
-                method=(
-                    f"psi_{req.n},{req.l},{req.m} evaluated on the y=0 plane "
-                    f"({req.resolution}x{req.resolution} grid)"
-                ),
-                assumptions=("closed-form evaluation at grid points",),
-            )
-            progress(1.0)
-            return PlaneResult(
-                values=values, quantity=req.quantity, unit=unit, label=label,
-                half_extent=half, n=req.n, l=req.l, m=req.m, basis=req.basis,
-                provenance=provenance,
+            return plane_grid(
+                req.n, req.l, req.m, quantity=req.quantity, basis=req.basis,
+                Z=sys_.Z, mu_ratio=sys_.mu_ratio.value,
+                resolution=req.resolution, progress=progress,
             )
 
         return _dispatch(job, work)
@@ -401,7 +558,9 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail=f"unknown job: {job_id}")
         return _job_model(job)
 
-    def _sample_meta(res: SampleJobResult, system_key: str) -> SampleMetaModel:
+    def _sample_meta(
+        res: SampleJobResult, system_key: str, model_key: str
+    ) -> SampleMetaModel:
         cloud = res.cloud
         channels = [
             ChannelModel(
@@ -423,35 +582,42 @@ def create_app() -> FastAPI:
         return SampleMetaModel(
             count=cloud.positions.shape[0], dtype="float32", layout="xyz-interleaved",
             unit="bohr", n=cloud.n, l=cloud.l, m=cloud.m, basis=cloud.basis,
-            system=system_key,
+            system=system_key, model=model_key,
             provenance=ProvenanceModel.from_provenance(cloud.provenance),
             channels=channels,
+        )
+
+    def _plane_meta(
+        pg: PlaneGrid, system_key: str, model_key: str
+    ) -> PlaneMetaModel:
+        return PlaneMetaModel(
+            resolution=pg.values.shape[0], dtype="float32",
+            layout="row-major float32; row i = z ascending, col j = x ascending",
+            quantity=pg.quantity, unit=pg.unit, label=pg.label,
+            half_extent=float(pg.axis[-1]), axis_unit="bohr",
+            n=pg.n, l=pg.l, m=pg.m, basis=pg.basis, system=system_key,
+            model=model_key,
+            provenance=ProvenanceModel.from_provenance(pg.provenance),
         )
 
     @app.get("/api/jobs/{job_id}/meta", response_model=SampleMetaModel | PlaneMetaModel)
     def job_meta(job_id: str) -> SampleMetaModel | PlaneMetaModel:
         res = _finished_result(jobs, job_id)
         system_key = app.state.job_systems.get(job_id, "h")
-        if isinstance(res, PlaneResult):
-            return PlaneMetaModel(
-                resolution=res.values.shape[0], dtype="float32",
-                layout="row-major float32; row i = z ascending, col j = x ascending",
-                quantity=res.quantity, unit=res.unit, label=res.label,
-                half_extent=res.half_extent, axis_unit="bohr",
-                n=res.n, l=res.l, m=res.m, basis=res.basis, system=system_key,
-                provenance=ProvenanceModel.from_provenance(res.provenance),
-            )
-        return _sample_meta(res, system_key)
+        model_key = app.state.job_models.get(job_id, "hydrogenic")
+        if isinstance(res, PlaneGrid):
+            return _plane_meta(res, system_key, model_key)
+        return _sample_meta(res, system_key, model_key)
 
     @app.get("/api/jobs/{job_id}/data")
     def job_data(job_id: str, channel: str | None = None) -> Response:
         res = _finished_result(jobs, job_id)
-        if isinstance(res, PlaneResult):
+        if isinstance(res, PlaneGrid):
             if channel is not None:
                 raise HTTPException(
                     status_code=422, detail="plane jobs have a single channel"
                 )
-            payload = res.values
+            payload = res.values.astype(np.float32)
         elif (channel or "positions") == "positions":
             payload = res.cloud.positions
         elif channel == "density":

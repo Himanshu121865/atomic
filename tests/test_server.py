@@ -23,10 +23,19 @@ def test_health():
 def test_systems_lists_hydrogenic_presets():
     with TestClient(app) as client:
         systems = client.get("/api/systems").json()["systems"]
-    assert [s["key"] for s in systems] == ["h", "d", "t", "mu-h", "ps", "he+"]
+    keys = [s["key"] for s in systems]
+    assert keys[:6] == ["h", "d", "t", "mu-h", "ps", "he+"]
     assert systems[0]["mu_ratio"]["unit"] == "m_e"
     assert systems[0]["nuclear_radius"]["unit"] == "bohr"
     assert systems[4]["nuclear_radius"] is None
+
+
+def test_systems_lists_screened_atoms_without_s_cl():
+    with TestClient(app) as client:
+        systems = {s["key"]: s for s in client.get("/api/systems").json()["systems"]}
+    assert systems["ne"]["kind"] == "screened"
+    assert systems["ne"]["has_gsz"] is True
+    assert "s" not in systems and "cl" not in systems
 
 
 def test_state_ground_state_values():
@@ -196,6 +205,66 @@ def test_plane_job_validates():
         assert client.post(
             "/api/jobs/plane", json={"n": 1, "l": 1, "m": 0}
         ).status_code == 422
+
+
+def test_screened_sample_job_lifecycle():
+    with TestClient(app) as client:
+        job_id = client.post(
+            "/api/jobs/sample",
+            json={"n": 1, "l": 0, "m": 0, "count": 1000, "system": "he", "seed": 3},
+        ).json()["id"]
+        job = _wait_done(client, job_id)
+        assert job["status"] == "done"
+        meta = client.get(f"/api/jobs/{job_id}/meta").json()
+        assert meta["kind"] == "sample"
+        assert meta["model"] == "screened"
+        assert meta["system"] == "he"
+        assert meta["provenance"]["fidelity"] == "approximation"
+        assert [c["name"] for c in meta["channels"]] == ["positions", "density", "phase"]
+
+
+def test_screened_plane_job():
+    with TestClient(app) as client:
+        job_id = client.post(
+            "/api/jobs/plane",
+            json={"n": 1, "l": 0, "m": 0, "quantity": "density", "resolution": 32, "system": "he"},
+        ).json()["id"]
+        _wait_done(client, job_id)
+        meta = client.get(f"/api/jobs/{job_id}/meta").json()
+        assert meta["kind"] == "plane"
+        assert meta["model"] == "screened"
+        assert len(client.get(f"/api/jobs/{job_id}/data").content) == 32 * 32 * 4
+
+
+def test_s_cl_refused_with_named_reason():
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/jobs/sample",
+            json={"n": 3, "l": 1, "m": 0, "count": 1000, "system": "s"},
+        )
+        assert r.status_code == 400
+        assert "GSZ" in r.json()["detail"]
+        assert client.get("/api/levels", params={"system": "cl"}).status_code == 400
+        assert client.get("/api/radial/3/1", params={"system": "s"}).status_code == 400
+
+
+def test_screened_levels_shape():
+    with TestClient(app) as client:
+        body = client.get("/api/levels", params={"system": "ne"}).json()
+    assert body["config"] == "1s2 2s2 2p6"
+    assert body["is_ground"] is True
+    assert body["system"]["kind"] == "screened"
+    assert len(body["orbitals"]) > 0
+    assert body["total_energy"]["unit"] == "hartree"
+    assert body["orbitals"][0]["energy"]["provenance"]["fidelity"] == "approximation"
+
+
+def test_screened_radial_shape():
+    with TestClient(app) as client:
+        body = client.get("/api/radial/1/0", params={"system": "he", "points": 100}).json()
+    assert len(body["r_wavefunction"]["values"]) == 100
+    assert body["system"]["kind"] == "screened"
+    assert body["r_wavefunction"]["provenance"]["fidelity"] == "approximation"
 
 
 def test_unknown_job_is_404_and_unfinished_meta_is_409():
