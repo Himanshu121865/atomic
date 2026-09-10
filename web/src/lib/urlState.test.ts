@@ -84,3 +84,27 @@ describe("currentUrlState", () => {
     });
   });
 });
+
+describe("model selection", () => {
+  it("round-trips the model key", () => {
+    const state = parseAppUrl("?system=ar&model=hf");
+    expect(state.model).toBe("hf");
+    const back = serializeAppUrl({ ...URL_DEFAULTS, system: "ar", model: "hf" });
+    expect(back).toContain("model=hf");
+    expect(parseAppUrl(back)).toMatchObject({ system: "ar", model: "hf" });
+  });
+
+  it("defaults to gsz so existing deep links keep resolving as before", () => {
+    expect(parseAppUrl("?system=he+").model).toBeUndefined();
+    expect(URL_DEFAULTS.model).toBe("gsz");
+  });
+
+  it("omits the default from the serialized URL", () => {
+    expect(serializeAppUrl(URL_DEFAULTS)).toBe("");
+    expect(serializeAppUrl({ ...URL_DEFAULTS, model: "hf" })).toContain("model=hf");
+  });
+
+  it("ignores an unknown model rather than passing it to the store", () => {
+    expect(parseAppUrl("?model=dft").model).toBeUndefined();
+  });
+});

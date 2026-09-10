@@ -61,17 +61,192 @@ export interface SystemsResponse {
   systems: SystemInfo[];
 }
 
-export interface LevelEntry {
-  n: number;
+export interface StarkSublevel {
+  n1: number;
+  n2: number;
+  m: number;
+  k: number;
   energy: Quantity;
   energy_ev: Quantity;
+}
+
+export interface GrossLevel {
+  n: number;
   degeneracy: number;
+  energy: Quantity;
+  energy_ev: Quantity;
+  sublevels?: StarkSublevel[] | null;
+}
+
+export interface ZeemanSublevel {
+  m_j: number;
+  branch: string;
+  j_label: number;
+  high_field_label: string;
+  energy: Quantity;
+  energy_ev: Quantity;
+}
+
+export interface FineLevel {
+  n: number;
+  l: number;
+  j: number;
+  energy: Quantity;
+  energy_ev: Quantity;
+  shift: Quantity;
+  shift_ev: Quantity;
+  sublevels?: ZeemanSublevel[] | null;
+}
+
+export interface HyperfineLevel {
+  F: number;
+  energy: Quantity;
+  energy_ev: Quantity;
+  shift: Quantity;
+  shift_ev: Quantity;
+}
+
+export interface HyperfineShell {
+  n: number;
+  available: boolean;
+  nucleus?: string | null;
+  I?: number | null;
+  A?: Quantity | null;
+  A_ev?: Quantity | null;
+  levels: HyperfineLevel[];
+  note?: string | null;
+  reason?: string | null;
 }
 
 export interface LevelsResponse {
   system: SystemInfo;
   n_max: number;
-  levels: LevelEntry[];
+  fine_structure: boolean;
+  alpha: number;
+  gross: GrossLevel[];
+  fine: FineLevel[] | null;
+  dirac: boolean;
+  b_field: number;
+  e_field: number;
+  hyperfine: boolean;
+  hyperfine_shells?: HyperfineShell[] | null;
+}
+
+export interface SpectralLineInfo {
+  n_upper: number;
+  l_upper: number;
+  j_upper: number | null;
+  n_lower: number;
+  l_lower: number;
+  j_lower: number | null;
+  energy_ev: Quantity;
+  wavelength_nm: Quantity;
+  einstein_a_s: Quantity | null;
+  oscillator_strength: Quantity | null;
+  emissivity: Quantity | null;
+}
+
+export interface ThermalInfo {
+  temperature_k: number;
+  electron_density_cm3: number;
+  ionized_fraction: Quantity;
+  partition_function: Quantity;
+}
+
+export interface LineWidthInfo {
+  label: string;
+  wavelength_nm: number;
+  n_upper: number;
+  n_lower: number;
+  sigma_nm: number;
+  gamma_nm: number;
+  fwhm_nm: number;
+  terms: string[];
+}
+
+export interface ProfileInfo {
+  wavelength_nm: number[];
+  intensity: number[];
+  unit: string;
+  weight_kind: "emissivity" | "rate" | "uniform";
+  resolving_power: number | null;
+  flux_closure: number;
+  widths: LineWidthInfo[];
+  stark_span_nm: Quantity | null;
+  stark_note: string | null;
+  provenance: Provenance;
+}
+
+export type GrowthRegime = "linear" | "saturated" | "damping";
+
+export interface CurveOfGrowthInfo {
+  label: string;
+  wavelength_nm: number;
+  oscillator_strength: number;
+  sigma_nm: number;
+  gamma_nm: number;
+  damping_parameter: number;
+  column_density_m2: number[];
+  equivalent_width_nm: number[];
+  regime: GrowthRegime[];
+  /** The local log-log slope: 1, then ~0, then 1/2. */
+  slope: number[];
+  tau_centre: number[];
+  window_nm: number;
+  provenance: Provenance;
+}
+
+/** One line's share of a blended absorption spectrum. */
+export interface AbsorbingLineInfo {
+  wavelength_nm: number;
+  label: string;
+  oscillator_strength: number;
+  lower_column_m2: number;
+  tau_centre: number;
+  regime: GrowthRegime;
+  thin_width_nm: number;
+  fwhm_nm: number;
+}
+
+export interface AbsorptionInfo {
+  wavelength_nm: number[];
+  transmission: number[];
+  optical_depth: number[];
+  lines: AbsorbingLineInfo[];
+  thermal: ThermalInfo | null;
+  column_density_m2: number;
+  equivalent_width_nm: number;
+  thin_limit_width_nm: number;
+  saturation: number;
+  blends: [string, string][];
+  flux_closure: number;
+  provenance: Provenance;
+  /** The column is a knob you turned, and it says so. */
+  column_provenance: Provenance;
+}
+
+export interface ComparisonInfo {
+  wavelength_nm: number;
+  reference_nm: number;
+  reference_uncertainty_nm: number | null;
+  delta_nm: number;
+  relative_error: number;
+  within_tolerance: boolean;
+}
+
+export interface SpectrumResponse {
+  system: SystemInfo;
+  n_max: number;
+  fine_structure: boolean;
+  lines: SpectralLineInfo[];
+  comparison: ComparisonInfo[] | null;
+  reference_citation: string | null;
+  tolerance_relative: number | null;
+  intensity_note: string | null;
+  /** Sent exactly when the lines carry an emissivity. */
+  thermal: ThermalInfo | null;
+  profile: ProfileInfo | null;
+  profile_note: string | null;
 }
 
 export interface ScreenedOrbital {
@@ -151,7 +326,39 @@ export interface PlaneMeta {
   provenance: Provenance;
 }
 
-export type JobMeta = SampleMeta | PlaneMeta;
+export interface HFOrbital {
+  n: number;
+  l: number;
+  label: string;
+  occupancy: number;
+  energy: Quantity;
+  energy_ev: Quantity;
+  channel: string;
+}
+
+export interface HFLevels {
+  kind: "hf";
+  z: number;
+  n_electrons: number;
+  symbol: string | null;
+  config: string;
+  is_ground: boolean;
+  orbitals: HFOrbital[];
+  total_energy: Quantity;
+  total_energy_ev: Quantity;
+  kinetic: Quantity;
+  potential: Quantity;
+  virial_ratio: Quantity;
+  iterations: number;
+  coarse_iterations: number;
+  converged: boolean;
+  provenance: Provenance;
+  grid_channel: string;
+  grid_points: number;
+  channels: ChannelInfo[];
+}
+
+export type JobMeta = SampleMeta | PlaneMeta | HFLevels;
 
 export interface DerivedObservable {
   quantity: Quantity;

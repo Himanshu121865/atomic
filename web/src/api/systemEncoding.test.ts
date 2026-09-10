@@ -16,7 +16,7 @@ afterEach(() => vi.unstubAllGlobals());
 const CALLS: [string, () => Promise<unknown>][] = [
   ["getState", () => getState(2, 1, 0, "he+")],
   ["getRadial", () => getRadial(2, 1, "he+")],
-  ["getLevels", () => getLevels("he+", 6)],
+  ["getLevels", () => getLevels("he+", 6, false)],
 ];
 
 describe("a system key containing '+' survives the trip to the server", () => {

@@ -1,12 +1,16 @@
 import type {
+  AbsorptionInfo,
   ClassicalGhost,
   ConstantsReport,
+  CurveOfGrowthInfo,
   ForceLawResult,
+  HFLevels,
   JobInfo,
   JobMeta,
   LevelsResponse,
   RadialResponse,
   ScreenedLevels,
+  SpectrumResponse,
   StateResponse,
   SystemsResponse,
 } from "./types";
@@ -78,8 +82,106 @@ export function getRadial(
   return getJson(`/api/radial/${n}/${l}?system=${key(system)}${p}`);
 }
 
-export function getLevels(system: string, nMax: number): Promise<LevelsResponse | ScreenedLevels> {
-  return getJson(`/api/levels?system=${key(system)}&n_max=${nMax}`);
+export function getLevels(
+  system: string,
+  nMax: number,
+  fineStructure: boolean,
+  alpha?: number,
+  dirac = false,
+  bField = 0,
+  eField = 0,
+  hyperfine = false,
+): Promise<LevelsResponse | ScreenedLevels> {
+  const a = alpha === undefined ? "" : `&alpha=${alpha}`;
+  const d = dirac ? "&dirac=true" : "";
+  const b = bField > 0 ? `&b_field=${bField}` : "";
+  const e = eField > 0 ? `&e_field=${eField}` : "";
+  const h = hyperfine ? "&hyperfine=true" : "";
+  return getJson(
+    `/api/levels?system=${key(system)}&n_max=${nMax}&fine_structure=${fineStructure}${a}${d}${b}${e}${h}`,
+  );
+}
+
+export interface ThermalParams {
+  temperatureK: number;
+  electronDensityCm3: number;
+}
+
+export interface ProfileParams {
+  on: boolean;
+  resolvingPower?: number | null;
+  window?: [number, number] | null;
+}
+
+export function getSpectrum(
+  system: string,
+  nMax: number,
+  fineStructure: boolean,
+  intensities = false,
+  thermal?: ThermalParams | null,
+  profile?: ProfileParams | null,
+): Promise<SpectrumResponse> {
+  const t = thermal
+    ? `&temperature_k=${num(thermal.temperatureK)}` +
+      `&electron_density_cm3=${num(thermal.electronDensityCm3)}`
+    : "";
+  let p = "";
+  if (profile?.on) {
+    p = "&profile=true";
+    if (profile.resolvingPower != null) {
+      p += `&resolving_power=${num(profile.resolvingPower)}`;
+    }
+    if (profile.window) {
+      p += `&lambda_min=${num(profile.window[0])}&lambda_max=${num(profile.window[1])}`;
+    }
+  }
+  return getJson(
+    `/api/spectrum?system=${key(system)}&n_max=${nMax}&fine_structure=${fineStructure}` +
+      `&intensities=${intensities}${t}${p}`,
+  );
+}
+
+export interface CurveOfGrowthParams {
+  system: string;
+  nMax: number;
+  fineStructure: boolean;
+  lambdaNm: number;
+  thermal: ThermalParams;
+  resolvingPower?: number | null;
+}
+
+export function getCurveOfGrowth(p: CurveOfGrowthParams): Promise<CurveOfGrowthInfo> {
+  const r = p.resolvingPower != null ? `&resolving_power=${num(p.resolvingPower)}` : "";
+  return getJson(
+    `/api/curve-of-growth?system=${key(p.system)}&n_max=${p.nMax}` +
+      `&fine_structure=${p.fineStructure}&lambda_nm=${num(p.lambdaNm)}` +
+      `&temperature_k=${num(p.thermal.temperatureK)}` +
+      `&electron_density_cm3=${num(p.thermal.electronDensityCm3)}${r}`,
+  );
+}
+
+export interface AbsorptionParams {
+  system: string;
+  nMax: number;
+  fineStructure: boolean;
+  columnDensityM2: number;
+  thermal: ThermalParams;
+  resolvingPower?: number | null;
+  window?: [number, number] | null;
+}
+
+export function getAbsorption(p: AbsorptionParams): Promise<AbsorptionInfo> {
+  const r = p.resolvingPower != null ? `&resolving_power=${num(p.resolvingPower)}` : "";
+  const w = p.window
+    ? `&lambda_min=${num(p.window[0])}&lambda_max=${num(p.window[1])}`
+    : "";
+  return getJson(
+    `/api/absorption?system=${key(p.system)}&n_max=${p.nMax}` +
+      `&fine_structure=${p.fineStructure}` +
+      `&column_density_m2=${num(p.columnDensityM2)}` +
+      `&temperature_k=${num(p.thermal.temperatureK)}` +
+      `&electron_density_cm3=${num(p.thermal.electronDensityCm3)}${r}${w}`,
+  );
 }
 
 export interface ConstMultipliers {
@@ -133,6 +235,20 @@ export interface SampleParams {
 
 export function createSampleJob(params: SampleParams): Promise<JobInfo> {
   return postJson("/api/jobs/sample", { seed: 0, ...params });
+}
+
+export interface HFParams {
+  z: number;
+  n_electrons?: number;
+  config?: string;
+}
+
+export function createHFJob(params: HFParams): Promise<JobInfo> {
+  return postJson("/api/jobs/hf", params);
+}
+
+export function isHFLevels(meta: JobMeta): meta is HFLevels {
+  return meta.kind === "hf";
 }
 
 export interface PlaneParams {

@@ -10,8 +10,10 @@ import {
 } from "./forceLaw";
 import { CONST_MAX, CONST_MIN, CONSTANT_KEYS, type ConstantKey } from "./whatif";
 
-export type ViewMode = "cloud" | "plane" | "radial" | "levels" | "whatif" | "forcelaw";
+export type ViewMode =
+  | "cloud" | "plane" | "radial" | "levels" | "spectrum" | "whatif" | "forcelaw";
 export type ColorMode = "solid" | "density" | "phase";
+export type AtomModel = "gsz" | "hf";
 
 export interface UrlState {
   n: number;
@@ -27,6 +29,13 @@ export interface UrlState {
   forceParams: Record<string, number>;
   forceL: number;
   forceExpr: string;
+  fineStructure: boolean;
+  dirac: boolean;
+  bField: number;
+  eField: number;
+  hyperfine: boolean;
+  intensities: boolean;
+  model: AtomModel;
 }
 
 export const URL_DEFAULTS: UrlState = {
@@ -43,11 +52,20 @@ export const URL_DEFAULTS: UrlState = {
   forceParams: defaultParams("powerlaw"),
   forceL: 0,
   forceExpr: DEFAULT_EXPR,
+  fineStructure: false,
+  dirac: false,
+  bField: 0,
+  eField: 0,
+  hyperfine: false,
+  intensities: true,
+  model: "gsz",
 };
 
 const N_MAX_UI = 6;
 
-const VIEWS: ViewMode[] = ["cloud", "plane", "radial", "levels", "whatif", "forcelaw"];
+const VIEWS: ViewMode[] = [
+  "cloud", "plane", "radial", "levels", "spectrum", "whatif", "forcelaw",
+];
 const COLORS: ColorMode[] = ["solid", "density", "phase"];
 const BASES: Basis[] = ["complex", "real"];
 const PLANES: PlaneQuantity[] = ["density", "psi"];
@@ -60,6 +78,7 @@ const FORCE_PRESETS: ForcePreset[] = [
   "coulombcore",
   "custom",
 ];
+const MODELS: AtomModel[] = ["gsz", "hf"];
 
 const CONST_PARAMS: Record<ConstantKey, string> = {
   hbar: "hbar",
@@ -99,6 +118,13 @@ export function currentUrlState(s: UrlState): UrlState {
     forceParams: s.forceParams,
     forceL: s.forceL,
     forceExpr: s.forceExpr,
+    fineStructure: s.fineStructure,
+    dirac: s.dirac,
+    bField: s.bField,
+    eField: s.eField,
+    hyperfine: s.hyperfine,
+    intensities: s.intensities,
+    model: s.model,
   };
 }
 
@@ -164,6 +190,19 @@ export function parseAppUrl(search: string): Partial<UrlState> {
     if (rawExpr !== null && validateExprClient(rawExpr) === null) out.forceExpr = rawExpr;
   }
 
+  const fs = q.get("fs");
+  if (fs === "1" || fs === "true") out.fineStructure = true;
+  else if (fs === "0" || fs === "false") out.fineStructure = false;
+  if (q.get("dirac") === "1") out.dirac = true;
+  const b = Number(q.get("b"));
+  if (Number.isFinite(b) && b > 0) out.bField = b;
+  const ef = Number(q.get("ef"));
+  if (Number.isFinite(ef) && ef > 0) out.eField = ef;
+  if (q.get("hf") === "1") out.hyperfine = true;
+  if (q.get("int") === "0") out.intensities = false;
+  const model = pickEnum(q.get("model"), MODELS);
+  if (model) out.model = model;
+
   return out;
 }
 
@@ -191,6 +230,13 @@ export function serializeAppUrl(state: UrlState): string {
   if (state.forcePreset === "custom" && state.forceExpr !== URL_DEFAULTS.forceExpr) {
     q.set("expr", state.forceExpr);
   }
+  if (state.fineStructure !== URL_DEFAULTS.fineStructure) q.set("fs", "1");
+  if (state.dirac && state.fineStructure) q.set("dirac", "1");
+  if (state.bField > 0 && state.fineStructure) q.set("b", String(state.bField));
+  if (state.eField > 0) q.set("ef", String(state.eField));
+  if (state.hyperfine) q.set("hf", "1");
+  if (!state.intensities) q.set("int", "0");
+  if (state.model !== URL_DEFAULTS.model) q.set("model", state.model);
   const s = q.toString();
   return s ? `?${s}` : "";
 }
