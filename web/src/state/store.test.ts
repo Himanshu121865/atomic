@@ -65,7 +65,25 @@ function stubFetch() {
         return json({ n: 1, l: 0, m: 0, system: SYSTEM, energy: { value: -0.5 } });
       }
       if (url.startsWith("/api/levels")) {
-        return json({ system: SYSTEM, n_max: 6, levels: [] });
+        return json({
+          system: SYSTEM,
+          n_max: 6,
+          fine_structure: false,
+          alpha: 1 / 137,
+          dirac: false,
+          b_field: 0,
+          e_field: 0,
+          hyperfine: false,
+          fine: null,
+          gross: [],
+        });
+      }
+      if (url.startsWith("/api/spectrum")) {
+        return json({
+          system: SYSTEM, n_max: 6, fine_structure: false,
+          lines: [], comparison: null, reference_citation: null,
+          tolerance_relative: null, intensity_note: null,
+        });
       }
       if (url.startsWith("/api/radial/")) {
         return json({ n: 1, l: 0, system: SYSTEM });
@@ -210,5 +228,56 @@ describe("loaders", () => {
     expect(useAppStore.getState().forceL).toBe(1);
     useAppStore.getState().setForceExpr("-1/r");
     expect(useAppStore.getState().forceExpr).toBe("-1/r");
+  });
+
+  it("level-detail controls clear cached levels so stale physics never renders", async () => {
+    const s = useAppStore.getState();
+    await s.loadLevels();
+    expect(useAppStore.getState().levels).not.toBeNull();
+    useAppStore.getState().setFineStructure(true);
+    expect(useAppStore.getState().levels).toBeNull();
+    await s.loadLevels();
+    useAppStore.getState().setDirac(true);
+    expect(useAppStore.getState().levels).toBeNull();
+    await s.loadLevels();
+    useAppStore.getState().setBField(2);
+    expect(useAppStore.getState().levels).toBeNull();
+    await s.loadLevels();
+    useAppStore.getState().setEField(30);
+    expect(useAppStore.getState().levels).toBeNull();
+    await s.loadLevels();
+    useAppStore.getState().setHyperfine(true);
+    expect(useAppStore.getState().levels).toBeNull();
+    useAppStore.getState().setFineStructure(false);
+    expect(useAppStore.getState().dirac).toBe(false);
+  });
+
+  it("loads the spectrum and re-asks when intensity toggles", async () => {
+    const s = useAppStore.getState();
+    await s.loadSpectrum();
+    expect(useAppStore.getState().spectrum).not.toBeNull();
+    useAppStore.getState().setIntensities(false);
+    expect(useAppStore.getState().spectrum).toBeNull();
+    expect(useAppStore.getState().intensities).toBe(false);
+  });
+
+  it("threads the level-detail controls into the levels URL", async () => {
+    let seen = "";
+    vi.stubGlobal("fetch", async (url: string) => {
+      seen = url;
+      return json({
+        system: SYSTEM, n_max: 6, fine_structure: true, alpha: 1 / 137,
+        dirac: true, b_field: 2, e_field: 30, hyperfine: true, fine: null, gross: [],
+      });
+    });
+    useAppStore.setState({
+      fineStructure: true, dirac: true, bField: 2, eField: 30, hyperfine: true,
+    });
+    await useAppStore.getState().loadLevels();
+    expect(seen).toContain("fine_structure=true");
+    expect(seen).toContain("dirac=true");
+    expect(seen).toContain("b_field=2");
+    expect(seen).toContain("e_field=30");
+    expect(seen).toContain("hyperfine=true");
   });
 });

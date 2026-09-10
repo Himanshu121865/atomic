@@ -2,13 +2,16 @@ import { create } from "zustand";
 import {
   createPlaneJob,
   createSampleJob,
+  getAbsorption,
   getChannel,
   getClassical,
   getConstants,
+  getCurveOfGrowth,
   getForceLaw,
   getJobMeta,
   getLevels,
   getRadial,
+  getSpectrum,
   getState,
   getSystems,
   type Basis,
@@ -16,8 +19,10 @@ import {
   type PlaneQuantity,
 } from "../api/client";
 import type {
+  AbsorptionInfo,
   ClassicalGhost,
   ConstantsReport,
+  CurveOfGrowthInfo,
   ForceLawResult,
   JobMeta,
   LevelsResponse,
@@ -25,12 +30,14 @@ import type {
   RadialResponse,
   SampleMeta,
   ScreenedLevels,
+  SpectrumResponse,
   StateResponse,
   SystemInfo,
 } from "../api/types";
 import type { ForcePreset } from "../lib/forceLaw";
 import { DEFAULT_EXPR, defaultParams } from "../lib/forceLaw";
-import type { ColorMode, ViewMode } from "../lib/urlState";
+import type { AtomModel, ColorMode, ViewMode } from "../lib/urlState";
+import { resolveModel } from "../lib/hfModel";
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
@@ -62,6 +69,19 @@ interface AppState {
   planeStatus: LoadStatus;
   radial: RadialResponse | null;
   levels: LevelsResponse | ScreenedLevels | null;
+  spectrum: SpectrumResponse | null;
+  intensities: boolean;
+  thermal: boolean;
+  temperatureK: number;
+  logNe: number;
+  profile: boolean;
+  logResolvingPower: number | null;
+  profileZoom: [number, number] | null;
+  showCurveOfGrowth: boolean;
+  curveOfGrowth: CurveOfGrowthInfo | null;
+  absorption: boolean;
+  logColumn: number;
+  absorptionData: AbsorptionInfo | null;
   labConst: ConstMultipliers;
   whatif: ConstantsReport | null;
   whatifStatus: LoadStatus;
@@ -73,6 +93,13 @@ interface AppState {
   forceExpr: string;
   forceLaw: ForceLawResult | null;
   forceStatus: LoadStatus;
+  fineStructure: boolean;
+  dirac: boolean;
+  bField: number;
+  eField: number;
+  hyperfine: boolean;
+  model: AtomModel;
+  setModel: (model: AtomModel) => void;
   setQuantumNumbers: (n: number, l: number, m: number) => void;
   setSystem: (system: string) => void;
   setBasis: (basis: Basis) => void;
@@ -86,6 +113,19 @@ interface AppState {
   loadPlane: () => Promise<void>;
   loadRadial: () => Promise<void>;
   loadLevels: () => Promise<void>;
+  loadSpectrum: () => Promise<void>;
+  setIntensities: (intensities: boolean) => void;
+  setThermal: (thermal: boolean) => void;
+  setTemperatureK: (temperatureK: number) => void;
+  setLogNe: (logNe: number) => void;
+  setProfile: (profile: boolean) => void;
+  setLogResolvingPower: (logResolvingPower: number | null) => void;
+  setProfileZoom: (profileZoom: [number, number] | null) => void;
+  setShowCurveOfGrowth: (showCurveOfGrowth: boolean) => void;
+  loadCurveOfGrowth: (lambdaNm: number) => Promise<void>;
+  setAbsorption: (absorption: boolean) => void;
+  setLogColumn: (logColumn: number) => void;
+  loadAbsorption: () => Promise<void>;
   setLabConst: (partial: Partial<ConstMultipliers>) => void;
   loadWhatIf: () => Promise<void>;
   loadGhost: () => Promise<void>;
@@ -94,6 +134,11 @@ interface AppState {
   setForceL: (l: number) => void;
   setForceExpr: (expr: string) => void;
   loadForceLaw: () => Promise<void>;
+  setFineStructure: (on: boolean) => void;
+  setDirac: (on: boolean) => void;
+  setBField: (b: number) => void;
+  setEField: (e: number) => void;
+  setHyperfine: (on: boolean) => void;
 }
 
 const INVALIDATED = {
@@ -109,6 +154,10 @@ const INVALIDATED = {
   planeStatus: "idle",
   radial: null,
   levels: null,
+  spectrum: null,
+  curveOfGrowth: null,
+  absorptionData: null,
+  profileZoom: null as [number, number] | null,
   ghost: null,
   ghostStatus: "idle",
 } as const;
@@ -154,6 +203,20 @@ export const useAppStore = create<AppState>()((set, get) => ({
   planeStatus: "idle",
   radial: null,
   levels: null,
+  spectrum: null,
+  intensities: true,
+  model: "gsz",
+  curveOfGrowth: null,
+  absorptionData: null,
+  temperatureK: 10000,
+  logNe: 13,
+  logResolvingPower: null,
+  profileZoom: null,
+  thermal: false,
+  profile: false,
+  showCurveOfGrowth: false,
+  absorption: false,
+  logColumn: 20,
   labConst: { hbar: 1, e: 1, m_e: 1, eps0: 1, c: 1 },
   whatif: null,
   whatifStatus: "idle",
@@ -165,9 +228,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
   forceExpr: DEFAULT_EXPR,
   forceLaw: null,
   forceStatus: "idle",
+  fineStructure: false,
+  dirac: false,
+  bField: 0,
+  eField: 0,
+  hyperfine: false,
 
   setQuantumNumbers: (n, l, m) => set({ n, l, m, ...INVALIDATED }),
-  setSystem: (system) => set({ system, ...INVALIDATED }),
+  setSystem: (system) =>
+    set({
+      system,
+      ...INVALIDATED,
+      model: resolveModel(get().systems, system, get().model),
+    }),
   setBasis: (basis) => set({ basis, ...INVALIDATED }),
   setView: (view) => set({ view }),
   setColorMode: (colorMode) => set({ colorMode }),
@@ -176,12 +249,16 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadSystems: async () => {
     const systems = (await getSystems()).systems;
-    set({ systems });
+    set({ systems, model: resolveModel(systems, get().system, get().model) });
   },
 
   loadStateInfo: async () => {
     const s = get();
-    set({ stateInfo: await getState(s.n, s.l, s.m, s.system) });
+    try {
+      set({ stateInfo: await getState(s.n, s.l, s.m, s.system) });
+    } catch {
+      set({ stateInfo: null });
+    }
   },
 
   sample: async () => {
@@ -239,8 +316,53 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadLevels: async () => {
     const s = get();
-    set({ levels: await getLevels(s.system, 6) });
+    set({
+      levels: await getLevels(
+        s.system,
+        6,
+        s.fineStructure,
+        undefined,
+        s.dirac,
+        s.bField,
+        s.eField,
+        s.hyperfine,
+      ),
+    });
   },
+
+  loadSpectrum: async () => {
+    const s = get();
+    set({
+      spectrum: await getSpectrum(
+        s.system, 6, s.fineStructure, s.intensities,
+        s.thermal ? { temperatureK: s.temperatureK, electronDensityCm3: 10 ** s.logNe } : null,
+        {
+          on: s.profile,
+          resolvingPower: s.logResolvingPower === null ? null : 10 ** s.logResolvingPower,
+          window: s.profileZoom,
+        },
+      ),
+    });
+  },
+
+  setIntensities: (intensities) => set({ intensities, spectrum: null }),
+  setThermal: (thermal) => set({ thermal, spectrum: null }),
+  setTemperatureK: (temperatureK) => set({ temperatureK, spectrum: null }),
+  setLogNe: (logNe) => set({ logNe, spectrum: null }),
+  setProfile: (profile) => set({ profile, spectrum: null }),
+  setLogResolvingPower: (logResolvingPower) => set({ logResolvingPower, spectrum: null }),
+  setProfileZoom: (profileZoom) =>
+    set({ profileZoom, spectrum: null, curveOfGrowth: null, absorptionData: null }),
+  setShowCurveOfGrowth: (showCurveOfGrowth) => set({ showCurveOfGrowth }),
+  setAbsorption: (absorption) => set({ absorption, absorptionData: null }),
+  setLogColumn: (logColumn) => set({ logColumn, absorptionData: null }),
+
+  setFineStructure: (fineStructure) => set({ fineStructure, dirac: false, levels: null }),
+  setDirac: (dirac) => set({ dirac, levels: null }),
+  setBField: (bField) => set({ bField, levels: null }),
+  setEField: (eField) => set({ eField, levels: null }),
+  setHyperfine: (hyperfine) => set({ hyperfine, levels: null }),
+  setModel: (model) => set({ model, ...INVALIDATED }),
 
   setLabConst: (partial) => {
     const labConst = { ...get().labConst, ...partial };
@@ -289,5 +411,37 @@ export const useAppStore = create<AppState>()((set, get) => ({
     } catch {
       set({ forceStatus: "error" });
     }
+  },
+
+  loadCurveOfGrowth: async (lambdaNm) => {
+    const { system, fineStructure, temperatureK, logNe, logResolvingPower } = get();
+    set({
+      curveOfGrowth: await getCurveOfGrowth({
+        system,
+        nMax: 6,
+        fineStructure,
+        lambdaNm,
+        thermal: { temperatureK, electronDensityCm3: 10 ** logNe },
+        resolvingPower: logResolvingPower === null ? null : 10 ** logResolvingPower,
+      }),
+    });
+  },
+
+  loadAbsorption: async () => {
+    const {
+      system, fineStructure, temperatureK, logNe, logResolvingPower,
+      logColumn, profileZoom,
+    } = get();
+    set({
+      absorptionData: await getAbsorption({
+        system,
+        nMax: 6,
+        fineStructure,
+        columnDensityM2: 10 ** logColumn,
+        thermal: { temperatureK, electronDensityCm3: 10 ** logNe },
+        resolvingPower: logResolvingPower === null ? null : 10 ** logResolvingPower,
+        window: profileZoom,
+      }),
+    });
   },
 }));
