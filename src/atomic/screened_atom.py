@@ -1,13 +1,30 @@
+"""How a screened multi-electron atom is solved in the GSZ central field
+(APPROXIMATION).
+
+Each angular momentum l is solved once in V_eff(r), and radial state k is
+principal number n = k + l + 1. The configuration decides occupancy and so what
+the energy sums over, while the field itself depends only on (Z, N). The
+orbital energies are APPROXIMATION, because the model error dominates, and they
+carry the numerical solve error inside them as a quantified sub-scale. See
+docs/specs/2026-07-18-phase6-screened-atoms-design.md.
+"""
+
 import dataclasses
 from dataclasses import dataclass
+from functools import lru_cache
 
 import numpy as np
 
 from atomic.analytic.angular import spherical_harmonic
 from atomic.analytic.wavefunction import WavefunctionValues
 from atomic.atoms import Configuration, aufbau_configuration, is_ground
+from atomic.numerics.dipole import (
+    dipole_box_radius,
+    dipole_from_solutions,
+    grid_points_for,
+)
 from atomic.numerics.mesh import display_window
-from atomic.numerics.radial_solver import solve_radial, solve_radial_with_error
+from atomic.numerics.radial_solver import RadialSolution, solve_radial, solve_radial_with_error
 from atomic.numerics.screening import screened_potential, screening_provenance
 from atomic.provenance import Fidelity, Field, Provenance, Quantity
 
@@ -19,7 +36,7 @@ class Orbital:
     n: int
     l: int
     occupancy: int
-    energy: Quantity
+    energy: Quantity  # APPROXIMATION, hartree
 
 
 @dataclass(frozen=True)
@@ -52,7 +69,7 @@ def _solve_energies(z: int, n_electrons: int, l: int, n_states: int) -> tuple[Qu
             fidelity=Fidelity.APPROXIMATION,
             method=f"{prov_model.method}; radial Schrodinger equation solved numerically",
             assumptions=prov_model.assumptions + e.provenance.assumptions,
-            error_estimate=e.provenance.error_estimate,
+            error_estimate=e.provenance.error_estimate,  # the numerical sub-scale
             refinement=prov_model.refinement,
         )
         out.append(dataclasses.replace(e, provenance=merged))
@@ -67,7 +84,7 @@ def solve_screened_atom(
     l_top = max((l for (_, l), _ in config), default=0)
     n_top = max((n for (n, _), _ in config), default=1)
     l_max = max(l_max, l_top)
-    n_states = max(n_states_per_l, n_top)
+    n_states = max(n_states_per_l, n_top)  # enough radial states to reach n_top
 
     orbitals: list[Orbital] = []
     for l in range(l_max + 1):
@@ -122,7 +139,7 @@ def screened_radial(
         potential, l=l, mu_ratio=1.0, r_max=r_max, n_states=k + 1
     )
     r_solver = sol.r
-    R = sol.u[k] / r_solver
+    R = sol.u[k] / r_solver  # R = u / r
     r_out = display_window(r_solver, r_solver**2 * R**2)
     grid = np.linspace(r_solver[0], r_out, points)
     R_i = np.interp(grid, r_solver, R)
@@ -144,6 +161,32 @@ def screened_radial(
 
 
 def _density_grid(z: int, n_electrons: int, n_top: int) -> tuple[float, int]:
+    """The box and point count for a whole atom's density, not for one orbital.
+
+    `_r_max` above sizes a box around the orbital that was asked for, and the
+    solver's default point count then sets the spacing to whatever falls out.
+    For one orbital that is fine, because the box and the orbital scale
+    together. For a density it is not: the box has to hold the outermost
+    occupied shell while the spacing has to resolve the innermost, and those two
+    are Z apart.
+
+    Measured on neutral argon: the `_r_max` box is 640 bohr, the default 48000
+    points put h at 0.013, and the 1s peaks at 0.055 with about four points
+    across it. The density then lost 0.13 of an electron and split the K shell
+    into two maxima at 0.054 and 0.066 bohr, a fourth shell argon does not have.
+    Both survived any refinement of the display grid, because neither was a
+    display problem.
+
+    So the box is sized to the valence and the spacing to the core. 4(n+1)^2 /
+    Z_net still clears the outermost orbital by tens of decay lengths (argon's
+    3p is bound at 0.6 hartree, so 64 bohr is e^-140 out), and h = 1/(40 Z)
+    puts about fifty points across a 1s of scale 1/Z. Against the wider box
+    this MOVES the deep orbitals: argon's 1s goes from -111.88 to -114.05
+    hartree, and shrinking the box further to 25 bohr moves it only another
+    0.005, so the narrow answer is the converged one. The valence energies,
+    which are what the screened model is judged on, move by under 0.002 hartree
+    either way.
+    """
     r_max = 4.0 * (n_top + 1) ** 2 / (z - n_electrons + 1)
     return r_max, int(np.ceil(r_max * 40.0 * z))
 
@@ -152,6 +195,25 @@ def screened_total_radial_density(
     z: int, n_electrons: int, config: Configuration | None = None,
     points: int = 400,
 ) -> Field:
+    """D(r) = sum_a q_a u_a(r)^2, the whole atom's radial density in
+    electrons/bohr.
+
+    This is the observable one. A single orbital is a basis choice and this sum
+    is not: integrate it over any shell and you get how many electrons are in
+    it. It is the GSZ counterpart to `hf_atom.hf_total_radial_density`, and the
+    two disagree in a way worth looking at, which is why both stay.
+
+    The error estimate is the closure residual |integral D dr - N| in electrons.
+    Every u_a is normalized to one on the solver's mesh, so N is exact there and
+    what is left after resampling is a real error in the right unit. It settles
+    at a floor set by the solve rather than falling to zero, because
+    interpolating u and then squaring sits just under the true u^2 between
+    nodes.
+
+    APPROXIMATION, and of a different thing than the energies: GSZ was fitted to
+    reproduce a potential, so a density read off its orbitals is further from
+    the data the model was built on than any energy returned here.
+    """
     cfg = aufbau_configuration(n_electrons) if config is None else config
     occupied = [(nl, q) for nl, q in cfg if q > 0]
     if not occupied:
@@ -209,6 +271,79 @@ def screened_total_radial_density(
     )
 
 
+_DIPOLE_CHANNEL_CACHE = 16
+
+
+@lru_cache(maxsize=_DIPOLE_CHANNEL_CACHE)
+def _dipole_channel(
+    z: int, n_electrons: int, l: int, r_max: float, n_points: int, n_states: int
+) -> RadialSolution:
+    """One l channel solved for the dipole grid, cached.
+
+    A spectrum asks for many lines but they run over only a handful of l
+    channels, so without this the same eigenproblem is re-solved for every line.
+    """
+    return solve_radial(
+        screened_potential(z, n_electrons), l=l, mu_ratio=1.0,
+        r_max=r_max, n_points=n_points, n_states=n_states,
+    )
+
+
+def screened_dipole_integral(
+    z: int, n_electrons: int, n_a: int, l_a: int, n_b: int, l_b: int,
+    n_box: int | None = None,
+) -> Quantity:
+    """The radial dipole matrix element <b|r|a> in bohr for a screened atom.
+
+    APPROXIMATION, not NUMERICAL: the GSZ model error dominates the grid error,
+    and labelling this by its discretization alone would understate it. The
+    grid-halving figure is still reported as the numerical sub-scale.
+
+    `n_box` sizes the shared grid for that principal quantum number instead of
+    the pair's own. A caller working through a whole line list should pass the
+    largest n in it, so every line lands on one grid: the box only has to be
+    big enough, and one box per atom means each l channel is solved once rather
+    than once per distinct pair, which is both faster and bounded in memory. It
+    costs no accuracy, because the spacing sets the error and the box does not.
+    """
+    for n, l, name in ((n_a, l_a, "a"), (n_b, l_b, "b")):
+        if n <= l:
+            raise ValueError(f"state {name}: n must be > l, got n={n}, l={l}")
+    n_top = max(n_a, n_b, n_box or 0)
+    z_net = z - n_electrons + 1
+    r_max = dipole_box_radius(n_top, z_net)
+    n_points = grid_points_for(r_max)
+
+    def overlap(points: int) -> float:
+        sol_a = _dipole_channel(z, n_electrons, l_a, r_max, points, n_top - l_a)
+        sol_b = _dipole_channel(z, n_electrons, l_b, r_max, points, n_top - l_b)
+        return dipole_from_solutions(sol_a, n_a - l_a - 1, sol_b, n_b - l_b - 1)
+
+    coarse = overlap(n_points)
+    fine = overlap(2 * n_points)
+    model = screening_provenance(z, n_electrons)
+    return Quantity(
+        value=fine,
+        unit="bohr",
+        label=f"<{n_b},{l_b}|r|{n_a},{l_a}> (Z={z}, N={n_electrons})",
+        provenance=Provenance(
+            fidelity=Fidelity.APPROXIMATION,
+            method=(
+                f"{model.method}; the dipole is integral u_a u_b r dr over the "
+                "numerically solved radials, both states on one grid"
+            ),
+            assumptions=model.assumptions
+            + (
+                f"one shared uniform grid: r_max={r_max:g} bohr, N={2 * n_points}",
+                "GSZ model error dominates the grid-halving figure quoted here",
+                "independent-particle: no correlation, no core polarization",
+            ),
+            error_estimate=abs(fine - coarse),
+            refinement=model.refinement,
+        ),
+    )
+
+
 def evaluate_screened_state(
     z: int,
     n_electrons: int,
@@ -219,6 +354,9 @@ def evaluate_screened_state(
     *,
     basis: str = "complex",
 ) -> WavefunctionValues:
+    """psi_nlm = numerical screened R_nl(|r|) x hydrogenic Y_lm, at the given
+    (N, 3) positions.
+    """
     pos = np.asarray(positions, dtype=float)
     if pos.ndim != 2 or pos.shape[1] != 3:
         raise ValueError(f"positions must have shape (N, 3), got {pos.shape}")
