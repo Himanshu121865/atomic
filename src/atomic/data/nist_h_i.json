@@ -1,0 +1,21 @@
+{
+  "species": "H I",
+  "citation": "Kramida, A., Ralchenko, Yu., Reader, J., and NIST ASD Team. NIST Atomic Spectra Database (ver. 5.12), https://physics.nist.gov/asd",
+  "retrieved": "2026-07-06",
+  "medium": "vacuum",
+  "note": "Fine-structure-averaged (aggregate) Ritz vacuum wavelengths per gross (n_upper -> n_lower) transition, n_upper <= 6, from the ASD lines query 90-2000 nm. ASD-quoted per-line uncertainties (<= 1e-4 nm) are far below the alpha^2 comparison tier and are not vendored.",
+  "lines": [
+    {"wavelength_nm": 121.56701, "uncertainty_nm": null, "label": "Lyman-alpha (2-1)"},
+    {"wavelength_nm": 102.57220, "uncertainty_nm": null, "label": "Lyman-beta (3-1)"},
+    {"wavelength_nm": 97.253650, "uncertainty_nm": null, "label": "Lyman-gamma (4-1)"},
+    {"wavelength_nm": 94.974287, "uncertainty_nm": null, "label": "Lyman-delta (5-1)"},
+    {"wavelength_nm": 93.780331, "uncertainty_nm": null, "label": "Lyman-epsilon (6-1)"},
+    {"wavelength_nm": 656.4632, "uncertainty_nm": null, "label": "Balmer-alpha H-alpha (3-2)"},
+    {"wavelength_nm": 486.2691, "uncertainty_nm": null, "label": "Balmer-beta H-beta (4-2)"},
+    {"wavelength_nm": 434.1691, "uncertainty_nm": null, "label": "Balmer-gamma H-gamma (5-2)"},
+    {"wavelength_nm": 410.28991, "uncertainty_nm": null, "label": "Balmer-delta H-delta (6-2)"},
+    {"wavelength_nm": 1875.6096, "uncertainty_nm": null, "label": "Paschen-alpha (4-3)"},
+    {"wavelength_nm": 1282.1576, "uncertainty_nm": null, "label": "Paschen-beta (5-3)"},
+    {"wavelength_nm": 1094.1082, "uncertainty_nm": null, "label": "Paschen-gamma (6-3)"}
+  ]
+}
