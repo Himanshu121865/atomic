@@ -16,6 +16,8 @@ from pydantic import BaseModel
 from pydantic import Field as PydanticField
 
 import atomic
+from atomic.analytic.dirac import dirac_energy
+from atomic.analytic.fine_structure import fine_structure_shift, level_energy
 from atomic.analytic.hydrogen import (
     angular_momentum_magnitude,
     energy,
@@ -23,22 +25,32 @@ from atomic.analytic.hydrogen import (
     radial_wavefunction,
     validate_quantum_numbers,
 )
+from atomic.analytic.hyperfine import hyperfine_report
+from atomic.analytic.stark import stark_sublevels
 from atomic.analytic.wavefunction import WavefunctionValues, evaluate_state
+from atomic.analytic.zeeman import zeeman_sublevels
 from atomic.atoms import (
     ATOM_KEYS,
     SUBSHELL_LABELS,
     atom_for_key,
     aufbau_configuration,
+    element_by_z,
     format_config,
     has_gsz_parameters,
     is_atom_key,
+    parse_config,
+    total_electrons,
+    validate_config,
 )
+from atomic.broadening import synthesize
 from atomic.classical import classical_ghost
-from atomic.constants import BOHR_RADIUS_PM, HARTREE_EV
+from atomic.constants import ALPHA, BOHR_RADIUS_PM, HARTREE_EV
 from atomic.constants_lab import analyze_constants
+from atomic.hf_atom import HFResult, solve_hartree_fock
 from atomic.numerics.expression import ExpressionError
 from atomic.numerics.force_law import PRESETS, force_law_levels, free_form_levels
 from atomic.plane import PlaneGrid, plane_grid, screened_plane_grid
+from atomic.populations import ThermalConditions
 from atomic.provenance import Fidelity, Field, Provenance, Quantity
 from atomic.sampling import SampleCloud, sample_density, sample_screened_density
 from atomic.screened_atom import (
@@ -48,18 +60,40 @@ from atomic.screened_atom import (
 )
 from atomic.server.jobs import Job, JobStatus, JobStore
 from atomic.server.schemas import (
+    AbsorptionSpectrumModel,
     ChannelModel,
     ClassicalGhostModel,
+    ComparisonModel,
     ConstantsReportModel,
+    CurveOfGrowthModel,
     FieldModel,
     ForceLawModel,
+    HFOrbitalModel,
+    HFResultModel,
+    LineModel,
+    ProfileModel,
     ProvenanceModel,
     QuantityModel,
     ScreenedLevelsModel,
     ScreenedOrbitalModel,
     SystemModel,
+    ThermalModel,
 )
-from atomic.systems import get_system, hydrogen_like, list_systems
+from atomic.spectra import (
+    compare_lines,
+    load_reference,
+    screened_transition_lines,
+    subshell_label,
+    transition_lines,
+)
+from atomic.systems import (
+    element_emitter_mass,
+    emitter_mass,
+    get_system,
+    hydrogen_like,
+    list_systems,
+)
+from atomic.transfer import absorb, curve_of_growth, default_columns
 
 _DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -85,17 +119,75 @@ def _job_worker_count() -> int:
     return max(2, min(4, os.cpu_count() or 2))
 
 
-class LevelEntry(BaseModel):
-    n: int
+class StarkSublevelModel(BaseModel):
+    n1: int
+    n2: int
+    m: int
+    k: int
     energy: QuantityModel
     energy_ev: QuantityModel
+
+
+class GrossLevelModel(BaseModel):
+    n: int
     degeneracy: int
+    energy: QuantityModel
+    energy_ev: QuantityModel
+    sublevels: list[StarkSublevelModel] | None = None
+
+
+class ZeemanSublevelModel(BaseModel):
+    m_j: float
+    branch: str
+    j_label: float
+    high_field_label: str
+    energy: QuantityModel
+    energy_ev: QuantityModel
+
+
+class FineLevelModel(BaseModel):
+    n: int
+    l: int
+    j: float
+    energy: QuantityModel
+    energy_ev: QuantityModel
+    shift: QuantityModel
+    shift_ev: QuantityModel
+    sublevels: list[ZeemanSublevelModel] | None = None
+
+
+class HyperfineLevelModel(BaseModel):
+    F: float
+    energy: QuantityModel
+    energy_ev: QuantityModel
+    shift: QuantityModel
+    shift_ev: QuantityModel
+
+
+class HyperfineShellModel(BaseModel):
+    n: int
+    available: bool
+    nucleus: str | None = None
+    I: float | None = None
+    A: QuantityModel | None = None       # coupling constant, hartree
+    A_ev: QuantityModel | None = None
+    levels: list[HyperfineLevelModel] = []
+    note: str | None = None              # e.g. spin-0: available but no split
+    reason: str | None = None            # why hyperfine is unavailable
 
 
 class LevelsResponse(BaseModel):
     system: SystemModel
     n_max: int
-    levels: list[LevelEntry]
+    fine_structure: bool
+    alpha: float
+    gross: list[GrossLevelModel]
+    fine: list[FineLevelModel] | None
+    dirac: bool = False
+    b_field: float = 0.0
+    e_field: float = 0.0
+    hyperfine: bool = False
+    hyperfine_shells: list[HyperfineShellModel] | None = None
 
 
 class StateResponse(BaseModel):
@@ -122,6 +214,20 @@ class RadialResponse(BaseModel):
     system: SystemModel
     r_wavefunction: FieldModel
     radial_probability: FieldModel
+
+
+class SpectrumResponse(BaseModel):
+    system: SystemModel
+    n_max: int
+    fine_structure: bool
+    lines: list[LineModel]
+    comparison: list[ComparisonModel] | None
+    reference_citation: str | None
+    tolerance_relative: float | None
+    intensity_note: str | None = None
+    thermal: ThermalModel | None = None
+    profile: ProfileModel | None = None
+    profile_note: str | None = None
 
 
 class SampleRequest(BaseModel):
@@ -173,6 +279,145 @@ class SampleJobResult:
     psi: WavefunctionValues
 
 
+class HFRequest(BaseModel):
+    """A Hartree-Fock solve request.
+
+    The exchange and Pauli counterfactual flags arrive with Phase 11; the
+    solve here is always the real model.
+    """
+
+    z: int
+    n_electrons: int | None = None  # defaults to neutral
+    config: str | None = None       # defaults to the aufbau ground configuration
+
+
+_HF_MAX_N = 3
+_HF_MAX_Z = 36
+
+
+def _parse_config_or_422(text: str):
+    """Parse a hand-written configuration string, 422 on malformed input.
+
+    422 means the request could not be understood, since "2s^9" is not a
+    configuration. 400 means it was understood perfectly and is being
+    declined, which is what _validate_hf_request returns: a neutral potassium
+    atom is a real, well-posed request that cannot be answered honestly.
+    """
+    try:
+        cfg = parse_config(text)
+        validate_config(cfg)
+    except (ValueError, IndexError) as exc:
+        raise HTTPException(status_code=422, detail=f"bad config: {exc}") from exc
+    return cfg
+
+
+def _validate_hf_request(z: int, n_electrons: int, config) -> None:
+    """Refuse what cannot be done, with the reason, before starting a job."""
+    if not 1 <= z <= _HF_MAX_Z:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Z must be in [1, {_HF_MAX_Z}], got {z}; the Hartree-Fock "
+                f"solver has not been exercised above {_HF_MAX_Z}, and a "
+                f"non-relativistic model is a poor description of a heavier atom"
+            ),
+        )
+    if not 1 <= n_electrons <= z + 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"electron count must be in [1, Z+1] = [1, {z + 1}], got {n_electrons}",
+        )
+    try:
+        validate_config(config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if total_electrons(config) != n_electrons:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"configuration holds {total_electrons(config)} electrons, "
+                f"not the {n_electrons} requested"
+            ),
+        )
+    n_top = max(n for (n, _), _ in config)
+    if n_top > _HF_MAX_N:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"this configuration occupies n = {n_top}, and convergence "
+                f"reaches only n = {_HF_MAX_N}. The {n_top}s guess starts from a "
+                f"bare-nucleus potential, which for a diffuse outer shell is far "
+                f"too contracted for the self-consistent loop to recover; the "
+                f"eigensolver stagnates rather than converging slowly. Ions "
+                f"whose outermost shell is n <= {_HF_MAX_N} are fine at any Z up "
+                f"to {_HF_MAX_Z}"
+            ),
+        )
+
+
+def _hf_channel(n: int, l: int) -> str:
+    return f"P_{n}{SUBSHELL_LABELS[l]}"
+
+
+def _hf_symbol(z: int) -> str | None:
+    """The element symbol, or None above the preset table.
+
+    Hartree-Fock solves further up than the preset library reaches, and naming
+    the element is a convenience for the view rather than part of the physics,
+    so not having one is not an error.
+    """
+    try:
+        return element_by_z(z).symbol
+    except KeyError:
+        return None
+
+
+def _hf_result_model(result: HFResult) -> HFResultModel:
+    return HFResultModel(
+        z=result.z,
+        n_electrons=result.n_electrons,
+        symbol=_hf_symbol(result.z),
+        config=format_config(result.config),
+        is_ground=result.is_ground,
+        orbitals=[
+            HFOrbitalModel(
+                n=o.n, l=o.l, label=f"{o.n}{SUBSHELL_LABELS[o.l]}",
+                occupancy=o.occupancy,
+                energy=QuantityModel.from_quantity(o.energy),
+                energy_ev=QuantityModel.from_quantity(_to_ev(o.energy)),
+                channel=_hf_channel(o.n, o.l),
+            )
+            for o in result.orbitals
+        ],
+        total_energy=QuantityModel.from_quantity(result.total_energy),
+        total_energy_ev=QuantityModel.from_quantity(_to_ev(result.total_energy)),
+        kinetic=QuantityModel.from_quantity(result.kinetic),
+        potential=QuantityModel.from_quantity(result.potential),
+        virial_ratio=QuantityModel.from_quantity(result.virial_ratio),
+        iterations=result.iterations,
+        coarse_iterations=result.coarse_iterations,
+        converged=result.converged,
+        provenance=ProvenanceModel.from_provenance(result.provenance),
+        grid_channel="grid",
+        grid_points=len(result.orbitals[0].P.grid),
+        channels=[
+            ChannelModel(
+                name="grid", dtype="float32", unit="bohr",
+                provenance=ProvenanceModel.from_provenance(
+                    result.orbitals[0].P.provenance
+                ),
+            ),
+            *(
+                ChannelModel(
+                    name=_hf_channel(o.n, o.l), dtype="float32", unit=o.P.unit,
+                    provenance=ProvenanceModel.from_provenance(o.P.provenance),
+                )
+                for o in result.orbitals
+            ),
+        ],
+    )
+
+
 class PlaneMetaModel(BaseModel):
     kind: Literal["plane"] = "plane"
     resolution: int
@@ -207,7 +452,10 @@ def _resolve_system(key: str):
     except KeyError:
         match = re.fullmatch(r"z(\d+)", key.strip().lower())
         if match:
-            return hydrogen_like(int(match.group(1)))
+            try:
+                return hydrogen_like(int(match.group(1)))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         available = [s.key for s in list_systems()]
         raise HTTPException(
             status_code=404, detail=f"unknown system {key!r}; available: {available}"
@@ -249,6 +497,29 @@ def _to_pm(q: Quantity) -> Quantity:
             q.provenance,
             method=q.provenance.method + "; converted to pm via CODATA Bohr radius",
         ),
+    )
+
+
+def _hyperfine_shell_model(rep) -> HyperfineShellModel:
+    """Map an available HyperfineReport to its response model, in eV as well."""
+    return HyperfineShellModel(
+        n=rep.n,
+        available=True,
+        nucleus=rep.nucleus_name,
+        I=rep.I,
+        A=QuantityModel.from_quantity(rep.A) if rep.A is not None else None,
+        A_ev=QuantityModel.from_quantity(_to_ev(rep.A)) if rep.A is not None else None,
+        levels=[
+            HyperfineLevelModel(
+                F=lv.F,
+                energy=QuantityModel.from_quantity(lv.energy),
+                energy_ev=QuantityModel.from_quantity(_to_ev(lv.energy)),
+                shift=QuantityModel.from_quantity(lv.shift),
+                shift_ev=QuantityModel.from_quantity(_to_ev(lv.shift)),
+            )
+            for lv in rep.levels
+        ],
+        note=rep.note,
     )
 
 
@@ -325,9 +596,24 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/levels", response_model=LevelsResponse | ScreenedLevelsModel)
-    def levels(system: str = "h", n_max: int = 6) -> LevelsResponse | ScreenedLevelsModel:
+    def levels(
+        system: str = "h",
+        n_max: int = 6,
+        fine_structure: bool = False,
+        alpha: float | None = None,
+        dirac: bool = False,
+        b_field: float = 0.0,
+        e_field: float = 0.0,
+        hyperfine: bool = False,
+    ) -> LevelsResponse | ScreenedLevelsModel:
         if not 1 <= n_max <= 20:
             raise HTTPException(status_code=422, detail="n_max must be in [1, 20]")
+        if alpha is not None and not 0.0 < alpha <= 0.5:
+            raise HTTPException(status_code=422, detail="alpha must be in (0, 0.5]")
+        if b_field < 0.0:
+            raise HTTPException(status_code=422, detail="b_field must be >= 0")
+        if e_field < 0.0:
+            raise HTTPException(status_code=422, detail="e_field must be >= 0")
         if is_atom_key(system):
             element = _screened_element(system)
             result = solve_screened_atom(
@@ -354,18 +640,422 @@ def create_app() -> FastAPI:
             )
         sys_ = _resolve_system(system)
         mu = sys_.mu_ratio.value
-        entries = []
+        alpha_used = ALPHA if alpha is None else alpha
+        gross = []
         for n in range(1, n_max + 1):
             e = energy(n, Z=sys_.Z, mu_ratio=mu)
-            entries.append(
-                LevelEntry(
-                    n=n,
-                    energy=QuantityModel.from_quantity(e),
-                    energy_ev=QuantityModel.from_quantity(_to_ev(e)),
-                    degeneracy=2 * n * n,
+            gsubs = None
+            if e_field > 0.0:
+                sss = stark_sublevels(
+                    n, Z=sys_.Z, mu_ratio=mu, field_mv_per_m=e_field,
                 )
+                gsubs = [
+                    StarkSublevelModel(
+                        n1=s.n1, n2=s.n2, m=s.m, k=s.k,
+                        energy=QuantityModel.from_quantity(s.energy),
+                        energy_ev=QuantityModel.from_quantity(_to_ev(s.energy)),
+                    )
+                    for s in sss
+                ]
+            gross.append(GrossLevelModel(
+                n=n, degeneracy=2 * n * n,
+                energy=QuantityModel.from_quantity(e),
+                energy_ev=QuantityModel.from_quantity(_to_ev(e)),
+                sublevels=gsubs,
+            ))
+        fine = None
+        if dirac or fine_structure:
+            fine = []
+            for n in range(1, n_max + 1):
+                for l in range(n):
+                    for j in ([0.5] if l == 0 else [l - 0.5, l + 0.5]):
+                        if dirac:
+                            try:
+                                le = dirac_energy(
+                                    n, j, Z=sys_.Z, mu_ratio=mu, alpha=alpha_used
+                                )
+                            except ValueError as exc:
+                                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                            e_bohr = energy(n, Z=sys_.Z, mu_ratio=mu)
+                            sh = dataclasses.replace(
+                                le,
+                                value=le.value - e_bohr.value,
+                                label=f"dE_Dirac {n},{l},j={j:g}",
+                            )
+                        else:
+                            le = level_energy(
+                                n, l, j, Z=sys_.Z, mu_ratio=mu,
+                                m_over_M=sys_.m_over_M, alpha=alpha_used,
+                            )
+                            sh = fine_structure_shift(
+                                n, l, j, Z=sys_.Z, mu_ratio=mu,
+                                m_over_M=sys_.m_over_M, alpha=alpha_used,
+                            )
+                        subs = None
+                        if b_field > 0.0:
+                            zss = zeeman_sublevels(
+                                n, l, Z=sys_.Z, mu_ratio=mu, m_over_M=sys_.m_over_M,
+                                alpha=alpha_used, b_tesla=b_field, dirac=dirac,
+                            )
+                            subs = [
+                                ZeemanSublevelModel(
+                                    m_j=z.m_j, branch=z.branch, j_label=z.j_label,
+                                    high_field_label=z.high_field_label,
+                                    energy=QuantityModel.from_quantity(z.energy),
+                                    energy_ev=QuantityModel.from_quantity(_to_ev(z.energy)),
+                                )
+                                for z in zss
+                                if z.j_label == j
+                            ]
+                        fine.append(FineLevelModel(
+                            n=n, l=l, j=j,
+                            energy=QuantityModel.from_quantity(le),
+                            energy_ev=QuantityModel.from_quantity(_to_ev(le)),
+                            shift=QuantityModel.from_quantity(sh),
+                            shift_ev=QuantityModel.from_quantity(_to_ev(sh)),
+                            sublevels=subs,
+                        ))
+        hf_shells = None
+        if hyperfine:
+            first = hyperfine_report(1, sys_)
+            if not first.available:
+                hf_shells = [HyperfineShellModel(
+                    n=1, available=False, reason=first.reason,
+                )]
+            else:
+                hf_shells = [
+                    _hyperfine_shell_model(hyperfine_report(n, sys_))
+                    for n in range(1, n_max + 1)
+                ]
+        return LevelsResponse(
+            system=SystemModel.from_system(sys_), n_max=n_max,
+            fine_structure=fine_structure, alpha=alpha_used, gross=gross, fine=fine,
+            dirac=dirac, b_field=b_field, e_field=e_field,
+            hyperfine=hyperfine, hyperfine_shells=hf_shells,
+        )
+
+    @app.get("/api/spectrum", response_model=SpectrumResponse)
+    def spectrum(
+        system: str = "h", n_max: int = 6,
+        fine_structure: bool = False,
+        intensities: bool = False,
+        temperature_k: float | None = None,
+        electron_density_cm3: float | None = None,
+        profile: bool = False,
+        resolving_power: float | None = None,
+        full_range: bool = False,
+        lambda_min: float | None = None,
+        lambda_max: float | None = None,
+    ) -> SpectrumResponse:
+        thermal = _resolve_thermal(temperature_k, electron_density_cm3)
+        if resolving_power is not None and not 1e2 <= resolving_power <= 1e7:
+            raise HTTPException(
+                status_code=422, detail="resolving_power must be in [1e2, 1e7]"
             )
-        return LevelsResponse(system=SystemModel.from_system(sys_), n_max=n_max, levels=entries)
+        zoom = _resolve_zoom(lambda_min, lambda_max)
+        if is_atom_key(system):
+            element = _screened_element(system)
+            result = solve_screened_atom(
+                element.z, element.z, aufbau_configuration(element.z)
+            )
+            lines = screened_transition_lines(
+                result, intensities=intensities, thermal=thermal
+            )
+            reference = load_reference(system)
+            comparison = citation = tol = None
+            if reference is not None:
+                tol = 0.05  # the 5% pass bar, disclosed rather than hidden
+                comparison = [
+                    ComparisonModel.from_comparison(c)
+                    for c in compare_lines(
+                        lines, reference, tolerance_relative=tol, window_relative=0.25
+                    )
+                ]
+                citation = reference.citation
+            prof = note = None
+            if profile:
+                prof, note = _synthesize_profile(
+                    lines, element_emitter_mass(element), hydrogenic=False,
+                    resolving_power=resolving_power, full_range=full_range,
+                    zoom=zoom,
+                )
+            return SpectrumResponse(
+                system=SystemModel.from_atom(
+                    element, element.z,
+                    f"{element.name}: GSZ screened central-field model (APPROXIMATION).",
+                ),
+                n_max=lines.n_max, fine_structure=False,
+                lines=[LineModel.from_line(ln) for ln in lines.lines],
+                comparison=comparison, reference_citation=citation,
+                tolerance_relative=tol, intensity_note=lines.intensity_note,
+                thermal=(
+                    None if lines.thermal is None
+                    else ThermalModel.from_state(lines.thermal)
+                ),
+                profile=prof, profile_note=note,
+            )
+        if not 2 <= n_max <= 10:
+            raise HTTPException(status_code=422, detail="n_max must be in [2, 10]")
+        sys_ = _resolve_system(system)
+        lines = transition_lines(
+            sys_, n_max=n_max, fine_structure=fine_structure,
+            intensities=intensities, thermal=thermal,
+        )
+        reference = load_reference(sys_.key)
+        comparison = None
+        citation = None
+        tol = None
+        if reference is not None:
+            tol = 1e-5 if fine_structure else 3e-5
+            comparison = [
+                ComparisonModel.from_comparison(c)
+                for c in compare_lines(lines, reference, tolerance_relative=tol)
+            ]
+            citation = reference.citation
+        prof = note = None
+        if profile:
+            prof, note = _synthesize_profile(
+                lines, emitter_mass(sys_), hydrogenic=True,
+                resolving_power=resolving_power, full_range=full_range,
+                zoom=zoom,
+            )
+        return SpectrumResponse(
+            system=SystemModel.from_system(sys_),
+            n_max=n_max,
+            fine_structure=fine_structure,
+            lines=[LineModel.from_line(ln) for ln in lines.lines],
+            comparison=comparison,
+            reference_citation=citation,
+            tolerance_relative=tol,
+            intensity_note=lines.intensity_note,
+            thermal=(
+                None if lines.thermal is None
+                else ThermalModel.from_state(lines.thermal)
+            ),
+            profile=prof, profile_note=note,
+        )
+
+    def _resolve_thermal(
+        temperature_k: float | None, electron_density_cm3: float | None
+    ) -> ThermalConditions | None:
+        """Both knobs or neither: half of Saha is not a state anyone can read.
+
+        These bounds are display limits, not physics limits. Below ~100 K
+        every excited level is empty and the spectrum is a single dark band;
+        above ~10^6 K hydrogen is long gone. The formulas hold outside; the view
+        has nothing to show there.
+        """
+        if temperature_k is None and electron_density_cm3 is None:
+            return None
+        if temperature_k is None or electron_density_cm3 is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "temperature_k and electron_density_cm3 must be given "
+                    "together: ionization depends on both"
+                ),
+            )
+        if not 1e2 <= temperature_k <= 1e6:
+            raise HTTPException(
+                status_code=422, detail="temperature_k must be in [1e2, 1e6]"
+            )
+        if not 1e4 <= electron_density_cm3 <= 1e22:
+            raise HTTPException(
+                status_code=422, detail="electron_density_cm3 must be in [1e4, 1e22]"
+            )
+        return ThermalConditions(temperature_k, electron_density_cm3)
+
+    def _resolve_zoom(
+        lambda_min: float | None, lambda_max: float | None
+    ) -> tuple[float, float] | None:
+        """Both ends or neither, and the low end has to be real light."""
+        if lambda_min is None and lambda_max is None:
+            return None
+        if lambda_min is None or lambda_max is None:
+            raise HTTPException(
+                status_code=422,
+                detail="lambda_min and lambda_max must be given together",
+            )
+        if not 0.0 < lambda_min < lambda_max:
+            raise HTTPException(
+                status_code=422, detail="need 0 < lambda_min < lambda_max"
+            )
+        return (lambda_min, lambda_max)
+
+    def _profile_window(lines) -> tuple[float, float] | None:
+        """The wavelength span a synthesized curve should cover.
+
+        Same structural rule the view uses for its bar axis: across-n lines set
+        the range, because a fine-structure list also holds within-n components
+        out at millimetres to metres, and stretching a synthesis over eleven
+        decades of wavelength spends the whole point budget on empty space. None
+        means "no split applies, use the lot".
+        """
+        across = [
+            ln.wavelength.value for ln in lines if ln.n_upper != ln.n_lower
+        ]
+        if not across or len(across) == len(lines):
+            return None
+        return (min(across), max(across))
+
+    def _synthesize_profile(
+        lines, mass, hydrogenic: bool, resolving_power: float | None,
+        full_range: bool, zoom: tuple[float, float] | None,
+    ) -> tuple[ProfileModel | None, str | None]:
+        """Build the curve, or say plainly why there is none.
+
+        The failure mode here is a feature: with no decay rate, no temperature
+        and no instrument, every line has zero width, and the only way to
+        draw a curve would be to invent one. The note names the knob instead.
+
+        A `zoom` window is where this phase earns its keep: a profile only shows
+        its shape when the axis is narrow enough to resolve it, and the whole
+        point budget then lands on the one line being looked at.
+        """
+        window = zoom if zoom else (None if full_range else _profile_window(lines.lines))
+        try:
+            syn = synthesize(
+                lines, emitter_mass=mass, hydrogenic=hydrogenic,
+                resolving_power=resolving_power, window_nm=window,
+                max_points=6000,
+            )
+        except ValueError as exc:
+            return None, str(exc)
+        return ProfileModel.from_synthetic(syn), None
+
+    def _check_resolving_power(resolving_power: float | None) -> None:
+        if resolving_power is not None and not 1e2 <= resolving_power <= 1e7:
+            raise HTTPException(
+                status_code=422, detail="resolving_power must be in [1e2, 1e7]"
+            )
+
+    def _lines_with_strengths(
+        system: str, n_max: int, fine_structure: bool, thermal
+    ):
+        """A line list carrying oscillator strengths and populations, plus the
+        emitter mass its Doppler widths need.
+
+        Both transfer endpoints want exactly this and want it identically:
+        a curve of growth and an absorption spectrum that disagreed about which
+        lines exist would be two answers about one gas.
+        """
+        if is_atom_key(system):
+            element = _screened_element(system)
+            result = solve_screened_atom(
+                element.z, element.z, aufbau_configuration(element.z)
+            )
+            lines = screened_transition_lines(result, intensities=True, thermal=thermal)
+            return lines, element_emitter_mass(element), False
+        if not 2 <= n_max <= 10:
+            raise HTTPException(status_code=422, detail="n_max must be in [2, 10]")
+        sys_ = _resolve_system(system)
+        lines = transition_lines(
+            sys_, n_max=n_max, fine_structure=fine_structure,
+            intensities=True, thermal=thermal,
+        )
+        return lines, emitter_mass(sys_), True
+
+    @app.get("/api/absorption", response_model=AbsorptionSpectrumModel)
+    def absorption_endpoint(
+        system: str = "h", n_max: int = 6, fine_structure: bool = False,
+        temperature_k: float = 10000.0, electron_density_cm3: float = 1e13,
+        column_density_m2: float = 1e20,
+        resolving_power: float | None = None,
+        lambda_min: float | None = None, lambda_max: float | None = None,
+    ) -> AbsorptionSpectrumModel:
+        """A whole line list in front of a flat continuum, and what survives it.
+
+        One column density for the element comes in; each line's own
+        lower-level fraction turns it into that line's absorbers. That is what
+        makes the Lyman lines go black while the Balmer lines stay invisible in
+        the same gas, and it is the fact the emission endpoint cannot represent.
+
+        The window is left to the synthesis unless asked for, because sizing
+        it by eye is how a third of an equivalent width went missing in Phase 19
+        without anything reporting a problem.
+        """
+        thermal = _resolve_thermal(temperature_k, electron_density_cm3)
+        if not 0.0 <= column_density_m2 <= 1e30:
+            raise HTTPException(
+                status_code=422,
+                detail="column_density_m2 must be in [0, 1e30]",
+            )
+        _check_resolving_power(resolving_power)
+        window = _resolve_zoom(lambda_min, lambda_max)
+        lines, mass, hydrogenic = _lines_with_strengths(
+            system, n_max, fine_structure, thermal
+        )
+        try:
+            spectrum = absorb(
+                lines, column_density_m2, emitter_mass=mass,
+                hydrogenic=hydrogenic, resolving_power=resolving_power,
+                window_nm=window,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return AbsorptionSpectrumModel.from_spectrum(spectrum, lines.thermal)
+
+    @app.get("/api/curve-of-growth", response_model=CurveOfGrowthModel)
+    def curve_of_growth_endpoint(
+        system: str = "h", n_max: int = 6, fine_structure: bool = False,
+        temperature_k: float = 10000.0, electron_density_cm3: float = 1e13,
+        lambda_nm: float = 656.28, resolving_power: float | None = None,
+    ) -> CurveOfGrowthModel:
+        """How much light one line removes, against how much gas is in the way.
+
+        The line is taken by wavelength rather than by quantum numbers so the
+        view can hand back whatever was clicked. The widths come from the same
+        Phase 18 synthesis that drew the profile, so this curve and the profile
+        beside it describe the same line.
+        """
+        thermal = _resolve_thermal(temperature_k, electron_density_cm3)
+        if lambda_nm <= 0.0:
+            raise HTTPException(status_code=422, detail="lambda_nm must be > 0")
+        _check_resolving_power(resolving_power)
+        lines, mass, hydrogenic = _lines_with_strengths(
+            system, n_max, fine_structure, thermal
+        )
+
+        syn = synthesize(
+            lines, emitter_mass=mass, hydrogenic=hydrogenic,
+            resolving_power=resolving_power, max_points=2000,
+        )
+        if not syn.profiles:
+            raise HTTPException(status_code=404, detail="no lines in this spectrum")
+
+        paired = list(zip(syn.profiles, syn.lines, strict=True))
+        target = min(
+            paired, key=lambda pl: abs(pl[0].wavelength_nm - lambda_nm)
+        )[0].wavelength_nm
+        width, line = max(
+            (pl for pl in paired if pl[0].wavelength_nm == target),
+            key=lambda pl: (
+                pl[1].oscillator_strength.value
+                if pl[1].oscillator_strength is not None else 0.0
+            ),
+        )
+        if line.oscillator_strength is None or line.oscillator_strength.value <= 0.0:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"the {width.label} line has no oscillator strength, so "
+                    "there is no absorption cross-section for it and no curve "
+                    "of growth"
+                ),
+            )
+        f = line.oscillator_strength.value
+        try:
+            columns = default_columns(f, width.wavelength_nm, width.sigma_nm,
+                                      width.gamma_nm)
+            curve = curve_of_growth(
+                f, width.wavelength_nm, width.sigma_nm, width.gamma_nm, columns
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return CurveOfGrowthModel.from_curve(
+            curve, f"{width.label} ({subshell_label(line)})",
+            width.sigma_nm, width.gamma_nm
+        )
 
     @app.get("/api/radial/{n}/{l}", response_model=RadialResponse)
     def radial(n: int, l: int, system: str = "h", points: int = 400) -> RadialResponse:
@@ -551,6 +1241,33 @@ def create_app() -> FastAPI:
 
         return _dispatch(job, work)
 
+    @app.post("/api/jobs/hf", response_model=JobModel)
+    async def create_hf_job(req: HFRequest) -> JobModel:
+        """Start a Hartree-Fock solve.
+
+        A job rather than a plain GET because the solve takes seconds, not
+        milliseconds (argon about 5s cold, chlorine about 7s), which is long
+        enough that a blocking request would be a bad answer even though it
+        would be a correct one. Results are memoized, so a repeat is free and
+        the job simply finishes immediately.
+        """
+        n_electrons = req.z if req.n_electrons is None else req.n_electrons
+        config = (
+            aufbau_configuration(n_electrons)
+            if req.config is None
+            else _parse_config_or_422(req.config)
+        )
+        _validate_hf_request(req.z, n_electrons, config)
+
+        job = jobs.create()
+
+        def work(progress):
+            result = solve_hartree_fock(req.z, n_electrons, config)
+            progress(1.0)
+            return result
+
+        return _dispatch(job, work)
+
     @app.get("/api/jobs/{job_id}", response_model=JobModel)
     def job_status(job_id: str) -> JobModel:
         job = jobs.get(job_id)
@@ -600,13 +1317,18 @@ def create_app() -> FastAPI:
             provenance=ProvenanceModel.from_provenance(pg.provenance),
         )
 
-    @app.get("/api/jobs/{job_id}/meta", response_model=SampleMetaModel | PlaneMetaModel)
-    def job_meta(job_id: str) -> SampleMetaModel | PlaneMetaModel:
+    @app.get(
+        "/api/jobs/{job_id}/meta",
+        response_model=SampleMetaModel | PlaneMetaModel | HFResultModel,
+    )
+    def job_meta(job_id: str) -> SampleMetaModel | PlaneMetaModel | HFResultModel:
         res = _finished_result(jobs, job_id)
         system_key = app.state.job_systems.get(job_id, "h")
         model_key = app.state.job_models.get(job_id, "hydrogenic")
         if isinstance(res, PlaneGrid):
             return _plane_meta(res, system_key, model_key)
+        if isinstance(res, HFResult):
+            return _hf_result_model(res)
         return _sample_meta(res, system_key, model_key)
 
     @app.get("/api/jobs/{job_id}/data")
@@ -618,6 +1340,22 @@ def create_app() -> FastAPI:
                     status_code=422, detail="plane jobs have a single channel"
                 )
             payload = res.values.astype(np.float32)
+        elif isinstance(res, HFResult):
+            if channel is None or channel == "grid":
+                payload = res.orbitals[0].P.grid.astype(np.float32)
+            else:
+                for o in res.orbitals:
+                    if _hf_channel(o.n, o.l) == channel:
+                        payload = o.P.values.astype(np.float32)
+                        break
+                else:
+                    known = ", ".join(
+                        ["grid", *(_hf_channel(o.n, o.l) for o in res.orbitals)]
+                    )
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"no channel {channel!r} on this job; it has {known}",
+                    )
         elif (channel or "positions") == "positions":
             payload = res.cloud.positions
         elif channel == "density":

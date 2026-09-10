@@ -78,13 +78,14 @@ def test_state_unknown_system_is_404():
 def test_levels_ladder():
     with TestClient(app) as client:
         body = client.get("/api/levels").json()
-    assert [lv["n"] for lv in body["levels"]] == [1, 2, 3, 4, 5, 6]
-    assert body["levels"][0]["energy"]["value"] == pytest.approx(
+    assert [lv["n"] for lv in body["gross"]] == [1, 2, 3, 4, 5, 6]
+    assert body["gross"][0]["energy"]["value"] == pytest.approx(
         energy(1, mu_ratio=H_MU).value
     )
-    assert body["levels"][1]["degeneracy"] == 8
+    assert body["gross"][1]["degeneracy"] == 8
+    assert body["fine"] is None
     with TestClient(app) as client:
-        assert len(client.get("/api/levels", params={"n_max": 2}).json()["levels"]) == 2
+        assert len(client.get("/api/levels", params={"n_max": 2}).json()["gross"]) == 2
         assert client.get("/api/levels", params={"n_max": 0}).status_code == 422
         assert client.get("/api/levels", params={"n_max": 21}).status_code == 422
 
@@ -292,3 +293,239 @@ def test_websocket_streams_progress_to_done():
                     break
         assert last["status"] == "done"
         assert last["progress"] == pytest.approx(1.0)
+
+
+
+
+def test_levels_endpoint_gross():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?n_max=3").json()
+    assert body["n_max"] == 3 and body["fine"] is None
+    assert [g["n"] for g in body["gross"]] == [1, 2, 3]
+    assert [g["degeneracy"] for g in body["gross"]] == [2, 8, 18]
+    e1 = body["gross"][0]["energy"]
+    assert e1["unit"] == "hartree"
+    assert e1["value"] == pytest.approx(-0.4997278, rel=1e-5)  # reduced-mass H
+    assert body["gross"][0]["energy_ev"]["unit"] == "eV"
+
+
+def test_levels_endpoint_fine_structure():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?n_max=2&fine_structure=true").json()
+    fine = body["fine"]
+    assert [(f["n"], f["l"], f["j"]) for f in fine] == [
+        (1, 0, 0.5), (2, 0, 0.5), (2, 1, 0.5), (2, 1, 1.5),
+    ]
+    for f in fine:
+        assert f["shift"]["provenance"]["fidelity"] == "approximation"
+        assert f["shift_ev"]["unit"] == "eV"
+    # 2p_1/2 lies below 2p_3/2
+    assert fine[2]["energy"]["value"] < fine[3]["energy"]["value"]
+
+
+def test_levels_fine_absent_without_flag():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?n_max=2").json()
+    assert body["fine_structure"] is False
+    assert body["fine"] is None
+
+
+def test_levels_dirac_is_exact_and_degenerate():
+    with TestClient(app) as client:
+        r = client.get("/api/levels", params={"system": "h", "n_max": 3, "dirac": "true"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["dirac"] is True
+    fine = body["fine"]
+    assert fine[0]["energy"]["provenance"]["fidelity"] == "exact"
+    n2 = [f for f in fine if f["n"] == 2 and f["j"] == 0.5]
+    assert len(n2) == 2
+    assert n2[0]["energy"]["value"] == pytest.approx(n2[1]["energy"]["value"], abs=1e-14)
+
+
+def test_levels_perturbative_still_default():
+    with TestClient(app) as client:
+        r = client.get("/api/levels", params={"system": "h", "n_max": 2, "fine_structure": "true"})
+    body = r.json()
+    assert body["dirac"] is False
+    assert body["fine"][0]["energy"]["provenance"]["fidelity"] == "approximation"
+
+
+def test_levels_dirac_supercritical_rejected():
+    with TestClient(app) as client:
+        r = client.get("/api/levels", params={"system": "z200", "n_max": 1, "dirac": "true"})
+    assert r.status_code == 422
+
+
+def test_levels_default_alpha_is_real_and_approximation():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?fine_structure=true").json()
+    assert body["alpha"] == pytest.approx(1 / 137.035999084, rel=1e-6)
+    assert body["fine"][0]["shift"]["provenance"]["fidelity"] == "approximation"
+
+
+def test_levels_altered_alpha_is_counterfactual():
+    with TestClient(app) as client:
+        real = client.get("/api/levels?fine_structure=true").json()
+        alt = client.get("/api/levels?fine_structure=true&alpha=0.05").json()
+    assert alt["alpha"] == pytest.approx(0.05)
+    assert alt["fine"][0]["shift"]["provenance"]["fidelity"] == "counterfactual"
+    assert abs(alt["fine"][0]["shift"]["value"]) > abs(real["fine"][0]["shift"]["value"])
+
+
+def test_levels_rejects_bad_alpha_and_z():
+    with TestClient(app) as client:
+        assert client.get("/api/levels?alpha=0").status_code == 422
+        assert client.get("/api/levels?alpha=0.6").status_code == 422
+        assert client.get("/api/levels?system=z0").status_code == 422
+        assert client.get("/api/levels?system=z99").status_code == 200
+
+
+def test_levels_zeeman_splits_fine_levels():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=h&n_max=3&fine_structure=true&b_field=2")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["b_field"] == 2.0
+    # A 2p level (l=1) fans into its m_j sublevels.
+    p = next(f for f in body["fine"] if f["n"] == 2 and f["l"] == 1 and f["j"] == 1.5)
+    assert p["sublevels"] is not None and len(p["sublevels"]) == 4  # m_j = +-3/2, +-1/2
+    s0 = p["sublevels"][0]
+    assert s0["energy"]["provenance"]["fidelity"] == "approximation"
+    assert "m_l" in s0["high_field_label"]
+
+
+def test_levels_zeeman_absent_without_field():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?system=h&n_max=2&fine_structure=true").json()
+    assert body["b_field"] == 0.0
+    assert all(f.get("sublevels") is None for f in body["fine"])
+
+
+def test_levels_zeeman_negative_field_rejected():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=h&n_max=2&fine_structure=true&b_field=-1")
+    assert r.status_code == 422
+
+
+def test_levels_zeeman_ignored_for_screened():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=he&fine_structure=true&b_field=5")
+    assert r.status_code == 200
+    assert "orbitals" in r.json()  # ScreenedLevelsModel, no sublevels
+
+
+def test_levels_stark_splits_gross_levels():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=h&n_max=3&e_field=50")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["e_field"] == 50.0
+    g2 = next(g for g in body["gross"] if g["n"] == 2)
+    assert g2["sublevels"] is not None and len(g2["sublevels"]) == 4  # n^2
+    s0 = g2["sublevels"][0]
+    assert s0["energy"]["provenance"]["fidelity"] == "approximation"
+    assert "k" in s0 and "n1" in s0
+
+
+def test_levels_stark_absent_without_field():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?system=h&n_max=2").json()
+    assert body["e_field"] == 0.0
+    assert all(g.get("sublevels") is None for g in body["gross"])
+
+
+def test_levels_stark_independent_of_fine_structure():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=h&n_max=2&fine_structure=false&e_field=30")
+    assert r.status_code == 200
+    g2 = next(g for g in r.json()["gross"] if g["n"] == 2)
+    assert g2["sublevels"] is not None and len(g2["sublevels"]) == 4
+
+
+def test_levels_stark_negative_field_rejected():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=h&n_max=2&e_field=-1")
+    assert r.status_code == 422
+
+
+def test_levels_stark_ignored_for_screened():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=he&e_field=50")
+    assert r.status_code == 200
+    assert "orbitals" in r.json()  # ScreenedLevelsModel, no sublevels
+
+
+def test_levels_hyperfine_splits_hydrogen_ground_state():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=h&n_max=2&hyperfine=true")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["hyperfine"] is True
+    shells = body["hyperfine_shells"]
+    assert shells is not None
+    s1 = next(s for s in shells if s["n"] == 1)
+    assert s1["available"] is True
+    assert s1["nucleus"] == "proton" and s1["I"] == 0.5
+    assert sorted(lv["F"] for lv in s1["levels"]) == [0.0, 1.0]
+    assert s1["A"]["provenance"]["fidelity"] == "approximation"
+    # F=1 -> F=0 is the 21 cm line, ~5.87e-6 eV.
+    split_ev = (max(lv["energy_ev"]["value"] for lv in s1["levels"])
+                - min(lv["energy_ev"]["value"] for lv in s1["levels"]))
+    assert split_ev == pytest.approx(5.874e-6, rel=2e-2)
+
+
+def test_levels_hyperfine_absent_without_flag():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?system=h&n_max=2").json()
+    assert body["hyperfine"] is False
+    assert body["hyperfine_shells"] is None
+
+
+def test_levels_hyperfine_spin_zero_nucleus_does_not_split():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?system=he%2B&n_max=1&hyperfine=true").json()
+    s1 = body["hyperfine_shells"][0]
+    assert s1["available"] is True and s1["I"] == 0.0
+    assert len(s1["levels"]) == 1
+    assert "spin" in (s1["note"] or "").lower()
+
+
+def test_levels_hyperfine_unavailable_for_positronium():
+    with TestClient(app) as client:
+        body = client.get("/api/levels?system=ps&n_max=2&hyperfine=true").json()
+    shells = body["hyperfine_shells"]
+    assert shells is not None and shells[0]["available"] is False
+    assert shells[0]["reason"]
+
+
+def test_levels_hyperfine_ignored_for_screened():
+    with TestClient(app) as client:
+        r = client.get("/api/levels?system=he&hyperfine=true")
+    assert r.status_code == 200
+    assert "orbitals" in r.json()
+
+
+
+
+def test_spectrum_endpoint_with_comparison():
+    with TestClient(app) as client:
+        body = client.get("/api/spectrum?system=h&n_max=6").json()
+    assert body["reference_citation"] and "NIST" in body["reference_citation"]
+    assert len(body["lines"]) > 10
+    assert body["comparison"] is not None
+    assert all(c["within_tolerance"] for c in body["comparison"])
+
+
+def test_spectrum_without_reference_data():
+    with TestClient(app) as client:
+        body = client.get("/api/spectrum?system=ps&n_max=3").json()
+    assert body["comparison"] is None
+    assert body["reference_citation"] is None
+    assert len(body["lines"]) > 0
+
+
+def test_spectrum_rejects_bad_n_max():
+    with TestClient(app) as client:
+        assert client.get("/api/spectrum?n_max=1").status_code == 422
+        assert client.get("/api/spectrum?n_max=11").status_code == 422
