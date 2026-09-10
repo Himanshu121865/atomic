@@ -6,6 +6,7 @@ const TABS: { value: ViewMode; label: string }[] = [
   { value: "plane", label: "Plane" },
   { value: "radial", label: "Radial" },
   { value: "levels", label: "Levels" },
+  { value: "spectrum", label: "Spectrum" },
   { value: "whatif", label: "What-If" },
   { value: "forcelaw", label: "Force Law" },
 ];

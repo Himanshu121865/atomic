@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { isScreenedLevels } from "../api/client";
 import type { Provenance, ScreenedLevels, SystemInfo } from "../api/types";
 import { useAppStore } from "../state/store";
-import { LevelsLadder, LevelsView, ScreenedLadder } from "./LevelsView";
+import { FineFan, LevelsLadder, LevelsView, ScreenedLadder, ZeemanFan } from "./LevelsView";
 
 const PROV: Provenance = {
   fidelity: "exact",
@@ -41,9 +41,16 @@ describe("LevelsView", () => {
     const levels = {
       system: { ...SYS },
       n_max: 2,
-      levels: [
-        { n: 1, energy: qty(-13.6), energy_ev: qty(-13.6), degeneracy: 2 },
-        { n: 2, energy: qty(-3.4), energy_ev: qty(-3.4), degeneracy: 8 },
+      fine_structure: false,
+      alpha: 1 / 137,
+      dirac: false,
+      b_field: 0,
+      e_field: 0,
+      hyperfine: false,
+      fine: null,
+      gross: [
+        { n: 1, degeneracy: 2, energy: qty(-13.6), energy_ev: qty(-13.6) },
+        { n: 2, degeneracy: 8, energy: qty(-3.4), energy_ev: qty(-3.4) },
       ],
     };
     const html = renderToStaticMarkup(
@@ -60,13 +67,60 @@ describe("LevelsView", () => {
     const levels = {
       system: { ...SYS },
       n_max: 2,
-      levels: [{ n: 1, energy: qty(-13.6), energy_ev: qty(-13.6), degeneracy: 2 }],
+      fine_structure: false,
+      alpha: 1 / 137,
+      dirac: false,
+      b_field: 0,
+      e_field: 0,
+      hyperfine: false,
+      fine: null,
+      gross: [{ n: 1, degeneracy: 2, energy: qty(-13.6), energy_ev: qty(-13.6) }],
     };
     const onPick = vi.fn();
     renderToStaticMarkup(<LevelsLadder levels={levels} activeN={1} maxL={0} onPick={onPick} />);
     expect(onPick).not.toHaveBeenCalled();
     useAppStore.getState().setQuantumNumbers(2, 1, 0);
     expect(useAppStore.getState().n).toBe(2);
+  });
+
+  it("shows the fine split of the selected shell in µeV", () => {
+    const shell = [
+      { n: 2, l: 1, j: 0.5, energy: qty(-3.4), energy_ev: qty(-3.4), shift: qty(-4.5e-6), shift_ev: qty(-4.5e-6) },
+      { n: 2, l: 1, j: 1.5, energy: qty(-3.4), energy_ev: qty(-3.4), shift: qty(-4.5e-6), shift_ev: qty(-4.5e-6) },
+    ];
+    const html = renderToStaticMarkup(
+      <FineFan shell={shell} grossEv={-3.4} dirac={false} />,
+    );
+    expect(html).toContain("α² fine structure");
+    expect(html).toContain("µeV");
+  });
+
+  it("labels the Dirac fan with the degeneracy caption", () => {
+    const shell = [
+      { n: 2, l: 0, j: 0.5, energy: qty(-3.4), energy_ev: qty(-3.4), shift: qty(0), shift_ev: qty(0) },
+      { n: 2, l: 1, j: 0.5, energy: qty(-3.4), energy_ev: qty(-3.4), shift: qty(0), shift_ev: qty(0) },
+    ];
+    const html = renderToStaticMarkup(
+      <FineFan shell={shell} grossEv={-3.4} dirac={true} />,
+    );
+    expect(html).toContain("Dirac exact");
+  });
+
+  it("renders the Zeeman fan of a fine level with sublevels", () => {
+    const fine = {
+      n: 2, l: 1, j: 1.5,
+      energy: qty(-3.4), energy_ev: qty(-3.4),
+      shift: qty(0), shift_ev: qty(0),
+      sublevels: [
+        { m_j: 1.5, branch: "single", j_label: 1.5, high_field_label: "m_l=1, m_s=+0.5", energy: qty(-3.4), energy_ev: qty(-3.4) },
+        { m_j: 0.5, branch: "upper", j_label: 1.5, high_field_label: "m_l=0, m_s=+0.5", energy: qty(-3.4), energy_ev: qty(-3.4) },
+        { m_j: -0.5, branch: "lower", j_label: 0.5, high_field_label: "m_l=0, m_s=-0.5", energy: qty(-3.4), energy_ev: qty(-3.4) },
+        { m_j: -1.5, branch: "single", j_label: 1.5, high_field_label: "m_l=-1, m_s=-0.5", energy: qty(-3.4), energy_ev: qty(-3.4) },
+      ],
+    };
+    const html = renderToStaticMarkup(<ZeemanFan fine={fine} bField={2} />);
+    expect(html).toContain("m_j=1.5");
+    expect(html).toContain("B = 2 T");
   });
 });
 
@@ -92,8 +146,18 @@ describe("ScreenedLadder", () => {
 
   it("discriminates screened payloads", () => {
     expect(isScreenedLevels(levels)).toBe(true);
-    expect(
-      isScreenedLevels({ system: { ...SYS }, n_max: 2, levels: [] }),
-    ).toBe(false);
+    const hydrogenic = {
+      system: { ...SYS },
+      n_max: 2,
+      fine_structure: false,
+      alpha: 1 / 137,
+      dirac: false,
+      b_field: 0,
+      e_field: 0,
+      hyperfine: false,
+      fine: null,
+      gross: [],
+    };
+    expect(isScreenedLevels(hydrogenic)).toBe(false);
   });
 });

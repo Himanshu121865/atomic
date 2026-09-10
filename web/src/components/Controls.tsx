@@ -1,6 +1,7 @@
 import { clampState } from "../lib/quantum";
 import type { Basis, PlaneQuantity } from "../api/client";
-import type { ColorMode, ViewMode } from "../lib/urlState";
+import type { AtomModel, ColorMode, ViewMode } from "../lib/urlState";
+import { gszAvailable } from "../lib/hfModel";
 import { useAppStore } from "../state/store";
 import { Choice, ControlGroup, Select, Slider } from "./Field";
 
@@ -10,9 +11,11 @@ const COUNTS = [10000, 100000, 500000];
 export function Controls() {
   const {
     n, l, m, system, basis, view, colorMode, planeQuantity, count,
-    systems, setQuantumNumbers, setSystem, setBasis, setView,
-    setColorMode, setPlaneQuantity, setCount,
+    systems, model, setQuantumNumbers, setSystem, setBasis, setView,
+    setColorMode, setPlaneQuantity, setCount, setModel,
   } = useAppStore();
+
+  const hasGsz = gszAvailable(systems, system);
 
   const pick = (nn: number, ll: number, mm: number) => {
     const c = clampState(nn, ll, mm);
@@ -52,6 +55,26 @@ export function Controls() {
           onChange={(v) => pick(n, l, Number(v))}
         />
         <Select label="system" value={system} options={systemOptions} onChange={setSystem} />
+        {systems.length > 0 && systems.some((s) => s.kind === "screened") && (
+          <Choice<AtomModel>
+            legend="model"
+            value={model}
+            onChange={setModel}
+            options={[
+              { value: "gsz", label: "screened (GSZ)", disabled: !hasGsz },
+              { value: "hf", label: "Hartree-Fock" },
+            ]}
+          />
+        )}
+        {!hasGsz && systems.length > 0 && (
+          <p className="panel-hint">
+            Szydlik and Green never published neutral GSZ screening parameters
+            for this element, so there is nothing to run the screened model on.
+            Hartree-Fock builds its potential out of the orbitals it is solving
+            for and needs no fitted table, which is the only reason this atom is
+            here at all.
+          </p>
+        )}
         <Choice<Basis>
           legend="basis"
           value={basis}
@@ -72,6 +95,7 @@ export function Controls() {
             { value: "plane", label: "plane" },
             { value: "radial", label: "radial" },
             { value: "levels", label: "levels" },
+            { value: "spectrum", label: "spectrum" },
           ]}
         />
         <Choice<ColorMode>
