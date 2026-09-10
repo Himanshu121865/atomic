@@ -1,12 +1,51 @@
 import { useEffect } from "react";
+import { stateLabel } from "../lib/quantum";
 import { useAppStore } from "../state/store";
 import { Badge } from "./Badge";
 
 export function InfoPanel() {
-  const { n, l, m, system, stateInfo, loadStateInfo } = useAppStore();
+  const { n, l, m, system, systems, model, stateInfo, loadStateInfo } = useAppStore();
+
+  const sys = systems.find((s) => s.key === system);
+  const screened = sys?.kind === "screened";
+
   useEffect(() => {
-    void loadStateInfo();
-  }, [n, l, m, system, loadStateInfo]);
+    if (!screened) void loadStateInfo();
+  }, [n, l, m, system, screened, loadStateInfo]);
+
+  if (screened && sys) {
+    return (
+      <div className="info-panel">
+        <h3>
+          {sys.name} <span className="info-formula">{stateLabel(n, l, m)}</span>
+        </h3>
+        <dl className="state-facts">
+          <div>
+            <dt>Z</dt>
+            <dd>{sys.z}</dd>
+          </div>
+          <div>
+            <dt>electrons</dt>
+            <dd>{sys.n_electrons ?? "—"}</dd>
+          </div>
+          <div>
+            <dt>model</dt>
+            <dd>{model === "hf" ? "Hartree-Fock" : "screened (GSZ)"}</dd>
+          </div>
+          <div>
+            <dt>fidelity</dt>
+            <dd>
+              <span className="badge badge-approximation">approximation</span>
+            </dd>
+          </div>
+        </dl>
+        <p className="panel-hint">
+          A many-electron atom has no closed-form state to read here. The
+          Energy levels and Radial views carry the solved quantities.
+        </p>
+      </div>
+    );
+  }
 
   if (!stateInfo) {
     return (
@@ -41,9 +80,7 @@ export function InfoPanel() {
         </div>
         <div>
           <dt>|L|</dt>
-          <dd>
-            {stateInfo.angular_momentum.value.toFixed(3)} ħ
-          </dd>
+          <dd>{stateInfo.angular_momentum.value.toFixed(3)} ħ</dd>
         </div>
       </dl>
     </div>

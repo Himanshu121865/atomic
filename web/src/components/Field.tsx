@@ -1,16 +1,19 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { Notation } from "../lib/mathText";
 
 export function ControlGroup({
   title,
   hint,
+  tone = "plain",
   children,
 }: {
   title: string;
   hint?: string;
+  tone?: "plain" | "active";
   children: ReactNode;
 }) {
   return (
-    <fieldset className="control-group">
+    <fieldset className={`control-group control-group-${tone}`}>
       <legend>{title}</legend>
       {hint !== undefined && <p className="control-hint">{hint}</p>}
       {children}
@@ -21,24 +24,31 @@ export function ControlGroup({
 export function Slider({
   label,
   readout,
+  anchor,
   min,
   max,
   step,
   value,
+  disabled = false,
+  atRest = false,
   onChange,
 }: {
   label: string;
   readout?: string;
+  anchor?: string;
   min: number;
   max: number;
   step: number;
   value: number;
+  disabled?: boolean;
+  atRest?: boolean;
   onChange: (v: number) => void;
 }) {
   return (
-    <label className="control-slider">
+    <label className="control-slider" data-rest={atRest || undefined}>
       <span className="control-label">
-        {label} <strong>{readout ?? value}</strong>
+        <Notation>{label}</Notation>{" "}
+        <strong>{readout ?? value}</strong>
       </span>
       <input
         type="range"
@@ -46,8 +56,13 @@ export function Slider({
         max={max}
         step={step}
         value={value}
+        disabled={disabled}
+        style={{ "--fill": `${max > min ? ((value - min) / (max - min)) * 100 : 0}%` } as CSSProperties}
         onChange={(e) => onChange(Number(e.target.value))}
       />
+      {anchor !== undefined && (
+        <span className="control-hint">{anchor}</span>
+      )}
     </label>
   );
 }
@@ -55,21 +70,36 @@ export function Slider({
 export function Toggle({
   label,
   checked,
+  why,
+  disabled = false,
+  disabledReason,
   onChange,
 }: {
   label: string;
   checked: boolean;
+  why?: string;
+  disabled?: boolean;
+  disabledReason?: string;
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="control-toggle">
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <span>{label}</span>
-    </label>
+    <div>
+      <label className="control-toggle">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span>
+          <Notation>{label}</Notation>
+        </span>
+      </label>
+      {disabled && disabledReason !== undefined && (
+        <p className="control-hint">{disabledReason}</p>
+      )}
+      {why !== undefined && !disabled && <p className="control-hint">{why}</p>}
+    </div>
   );
 }
 
