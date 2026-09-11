@@ -36,6 +36,10 @@ export interface UrlState {
   hyperfine: boolean;
   intensities: boolean;
   model: AtomModel;
+  config: string | null;
+  exchange: boolean;
+  pauli: boolean;
+  compare: boolean;
 }
 
 export const URL_DEFAULTS: UrlState = {
@@ -59,6 +63,10 @@ export const URL_DEFAULTS: UrlState = {
   hyperfine: false,
   intensities: true,
   model: "gsz",
+  config: null,
+  exchange: true,
+  pauli: true,
+  compare: false,
 };
 
 const N_MAX_UI = 6;
@@ -79,6 +87,7 @@ const FORCE_PRESETS: ForcePreset[] = [
   "custom",
 ];
 const MODELS: AtomModel[] = ["gsz", "hf"];
+const CONFIG_RE = /^(\d[spdfgh]\d+)( \d[spdfgh]\d+)*$/;
 
 const CONST_PARAMS: Record<ConstantKey, string> = {
   hbar: "hbar",
@@ -125,6 +134,10 @@ export function currentUrlState(s: UrlState): UrlState {
     hyperfine: s.hyperfine,
     intensities: s.intensities,
     model: s.model,
+    config: s.config,
+    exchange: s.exchange,
+    pauli: s.pauli,
+    compare: s.compare,
   };
 }
 
@@ -202,6 +215,14 @@ export function parseAppUrl(search: string): Partial<UrlState> {
   if (q.get("int") === "0") out.intensities = false;
   const model = pickEnum(q.get("model"), MODELS);
   if (model) out.model = model;
+  const config = q.get("config");
+  if (config !== null && CONFIG_RE.test(config)) out.config = config;
+  if (q.get("nox") === "1") out.exchange = false;
+  if (q.get("nopauli") === "1") {
+    out.pauli = false;
+    out.exchange = false;
+  }
+  if (q.get("compare") === "1") out.compare = true;
 
   return out;
 }
@@ -237,6 +258,10 @@ export function serializeAppUrl(state: UrlState): string {
   if (state.hyperfine) q.set("hf", "1");
   if (!state.intensities) q.set("int", "0");
   if (state.model !== URL_DEFAULTS.model) q.set("model", state.model);
+  if (state.config) q.set("config", state.config);
+  if (!state.exchange) q.set("nox", "1");
+  if (!state.pauli) q.set("nopauli", "1");
+  if (state.compare) q.set("compare", "1");
   const s = q.toString();
   return s ? `?${s}` : "";
 }

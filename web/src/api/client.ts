@@ -77,9 +77,19 @@ export function getRadial(
   l: number,
   system: string,
   points?: number,
+  model: "gsz" | "hf" = "gsz",
+  config?: string | null,
+  exchange = true,
+  pauli = true,
+  compare = false,
 ): Promise<RadialResponse> {
   const p = points === undefined ? "" : `&points=${points}`;
-  return getJson(`/api/radial/${n}/${l}?system=${key(system)}${p}`);
+  const m = model === "hf" ? "&model=hf" : "";
+  const c = config ? `&config=${encodeURIComponent(config)}` : "";
+  const x = exchange ? "" : "&exchange=false";
+  const pa = pauli ? "" : "&pauli=false";
+  const co = compare ? "&compare=true" : "";
+  return getJson(`/api/radial/${n}/${l}?system=${key(system)}${p}${m}${c}${x}${pa}${co}`);
 }
 
 export function getLevels(
@@ -231,6 +241,10 @@ export interface SampleParams {
   seed?: number;
   basis: Basis;
   system: string;
+  model?: "gsz" | "hf";
+  config?: string | null;
+  exchange?: boolean;
+  pauli?: boolean;
 }
 
 export function createSampleJob(params: SampleParams): Promise<JobInfo> {
@@ -241,6 +255,8 @@ export interface HFParams {
   z: number;
   n_electrons?: number;
   config?: string;
+  exchange?: boolean;
+  pauli?: boolean;
 }
 
 export function createHFJob(params: HFParams): Promise<JobInfo> {
@@ -259,6 +275,10 @@ export interface PlaneParams {
   basis: Basis;
   system: string;
   resolution?: number;
+  model?: "gsz" | "hf";
+  config?: string | null;
+  exchange?: boolean;
+  pauli?: boolean;
 }
 
 export function createPlaneJob(params: PlaneParams): Promise<JobInfo> {

@@ -108,3 +108,40 @@ describe("model selection", () => {
     expect(parseAppUrl("?model=dft").model).toBeUndefined();
   });
 });
+
+describe("many-electron controls", () => {
+  it("round-trips config, nox, nopauli and compare", () => {
+    const parsed = parseAppUrl("?model=hf&config=1s2%202s1&nox=1&compare=1");
+    expect(parsed).toMatchObject({
+      model: "hf",
+      config: "1s2 2s1",
+      exchange: false,
+      compare: true,
+    });
+    const back = serializeAppUrl({ ...URL_DEFAULTS, ...parsed });
+    expect(back).toContain("config=1s2+2s1");
+    expect(back).toContain("nox=1");
+    expect(back).toContain("compare=1");
+    expect(parseAppUrl(back)).toMatchObject({
+      config: "1s2 2s1",
+      exchange: false,
+      compare: true,
+    });
+  });
+
+  it("reads nopauli as the collapse it means, exchange off included", () => {
+    expect(parseAppUrl("?nopauli=1")).toMatchObject({ pauli: false, exchange: false });
+    const back = serializeAppUrl({ ...URL_DEFAULTS, pauli: false, exchange: false });
+    expect(back).toContain("nopauli=1");
+  });
+
+  it("drops a malformed config rather than sending it", () => {
+    expect(parseAppUrl("?config=banana").config).toBeUndefined();
+  });
+
+  it("omits the real-physics defaults from the serialized URL", () => {
+    expect(serializeAppUrl(URL_DEFAULTS)).not.toContain("nox");
+    expect(serializeAppUrl(URL_DEFAULTS)).not.toContain("nopauli");
+    expect(serializeAppUrl(URL_DEFAULTS)).not.toContain("compare");
+  });
+});

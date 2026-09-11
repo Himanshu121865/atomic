@@ -1,8 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { Provenance, SystemInfo } from "../api/types";
+import type { DensityComparison, Provenance, SystemInfo } from "../api/types";
 import { useAppStore } from "../state/store";
-import { drawCutoff, RadialPlots, RadialView, zeroCrossings } from "./RadialView";
+import { ComparisonPanel, drawCutoff, RadialPlots, RadialView, zeroCrossings } from "./RadialView";
 
 const PROV: Provenance = {
   fidelity: "exact",
@@ -74,5 +74,43 @@ describe("RadialView", () => {
     expect(html).toContain("P(r)");
     expect(html).toContain("1 radial node");
     expect(html).toContain("2.50");
+  });
+});
+
+describe("ComparisonPanel", () => {
+  const comparison: DensityComparison = {
+    gsz: field([1, 0.5]),
+    hf: field([1, 0.6]),
+    displaced_charge: {
+      value: 0.06,
+      unit: "electrons",
+      label: "d",
+      provenance: {
+        ...PROV,
+        fidelity: "approximation",
+        error_estimate: 0.002,
+      },
+    },
+    shells: [
+      { label: "K", gsz_radius: 0.1, hf_radius: 0.1, gsz_depth: null, hf_depth: null },
+      { label: "L", gsz_radius: null, hf_radius: 3.16, gsz_depth: null, hf_depth: 0.003 },
+    ],
+    provenance: { ...PROV, fidelity: "approximation" },
+  };
+
+  it("states the displaced charge with its bar and the shell table", () => {
+    const html = renderToStaticMarkup(<ComparisonPanel comparison={comparison} />);
+    expect(html).toContain("0.06");
+    expect(html).toContain("no separate peak");
+    expect(html).toContain("dimple");
+  });
+
+  it("says so instead of a figure when the bar exceeds the number", () => {
+    const thin = {
+      ...comparison,
+      displaced_charge: { ...comparison.displaced_charge, value: 0.0001 },
+    };
+    const html = renderToStaticMarkup(<ComparisonPanel comparison={thin} />);
+    expect(html).toContain("inside its own error bar");
   });
 });

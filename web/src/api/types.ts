@@ -269,6 +269,24 @@ export interface RadialResponse {
   system: SystemInfo;
   r_wavefunction: FieldData;
   radial_probability: FieldData;
+  total_density?: FieldData | null;
+  density_comparison?: DensityComparison | null;
+}
+
+export interface ShellPeak {
+  label: string;
+  gsz_radius: number | null;
+  hf_radius: number | null;
+  gsz_depth: number | null;
+  hf_depth: number | null;
+}
+
+export interface DensityComparison {
+  gsz: FieldData;
+  hf: FieldData;
+  displaced_charge: Quantity;
+  shells: ShellPeak[];
+  provenance: Provenance;
 }
 
 export type JobStatus = "pending" | "running" | "done" | "error";

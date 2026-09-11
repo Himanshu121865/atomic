@@ -280,4 +280,51 @@ describe("loaders", () => {
     expect(seen).toContain("e_field=30");
     expect(seen).toContain("hyperfine=true");
   });
+
+  it("couples the counterfactual switches both ways and clears derived data", async () => {
+    const s = useAppStore.getState();
+    expect(s.exchange).toBe(true);
+    expect(s.pauli).toBe(true);
+    useAppStore.getState().setExchange(false);
+    expect(useAppStore.getState().exchange).toBe(false);
+    expect(useAppStore.getState().pauli).toBe(true);
+    useAppStore.getState().setExchange(true);
+    expect(useAppStore.getState().pauli).toBe(true);
+    useAppStore.getState().setPauli(false);
+    expect(useAppStore.getState().pauli).toBe(false);
+    expect(useAppStore.getState().exchange).toBe(false);
+    useAppStore.getState().setPauli(true);
+    expect(useAppStore.getState().exchange).toBe(true);
+  });
+
+  it("threads model, config and the switches into the radial URL", async () => {
+    let seen = "";
+    vi.stubGlobal("fetch", async (url: string) => {
+      seen = url;
+      return json({ n: 2, l: 1, system: SYSTEM });
+    });
+    useAppStore.setState({
+      model: "hf", config: "1s2 2s2 2p5 3s1", exchange: false, compare: true,
+    });
+    await useAppStore.getState().loadRadial();
+    expect(seen).toContain("model=hf");
+    expect(seen).toContain("config=1s2%202s2%202p5%203s1");
+    expect(seen).toContain("exchange=false");
+    expect(seen).toContain("compare=true");
+  });
+
+  it("threads the four fields into sample job bodies", async () => {
+    let body = "";
+    vi.stubGlobal("fetch", async (url: string, init?: { method?: string; body?: string }) => {
+      if (url === "/api/jobs/sample") body = String(init?.body ?? "");
+      return json({ id: "j1", status: "pending", progress: 0, error: null });
+    });
+    useAppStore.setState({ model: "hf", config: "1s2 2s1", exchange: false, pauli: true });
+    await useAppStore.getState().sample().catch(() => undefined);
+    const sent = JSON.parse(body === "" ? "{}" : body) as Record<string, unknown>;
+    expect(sent["model"]).toBe("hf");
+    expect(sent["config"]).toBe("1s2 2s1");
+    expect(sent["exchange"]).toBe(false);
+    expect(sent["pauli"]).toBe(true);
+  });
 });

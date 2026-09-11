@@ -1,6 +1,6 @@
 import { scaleLinear } from "d3-scale";
 import { useEffect } from "react";
-import type { FieldData, Quantity, RadialResponse } from "../api/types";
+import type { DensityComparison, FieldData, Quantity, RadialResponse } from "../api/types";
 import { useAppStore } from "../state/store";
 import { Badge } from "./Badge";
 import { Disclosure } from "./Disclosure";
@@ -30,6 +30,24 @@ export function drawCutoff(values: number[]): number {
   return Math.min(values.length, end + 1);
 }
 
+function resampleOnto(field: FieldData, grid: number[]): number[] {
+  const g = field.grid;
+  const v = field.values;
+  return grid.map((r) => {
+    if (r <= g[0]) return v[0];
+    if (r >= g[g.length - 1]) return v[v.length - 1];
+    let lo = 0;
+    let hi = g.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (g[mid] <= r) lo = mid;
+      else hi = mid;
+    }
+    const t = (r - g[lo]) / (g[hi] - g[lo]);
+    return v[lo] + t * (v[hi] - v[lo]);
+  });
+}
+
 function FieldPlot({
   field,
   title,
@@ -37,6 +55,8 @@ function FieldPlot({
   marker,
   markerLabel,
   showNodes = false,
+  second,
+  secondLabel,
 }: {
   field: FieldData;
   title: string;
@@ -44,14 +64,17 @@ function FieldPlot({
   marker?: Quantity;
   markerLabel?: string;
   showNodes?: boolean;
+  second?: FieldData;
+  secondLabel?: string;
 }) {
   const end = drawCutoff(field.values);
   const grid = field.grid.slice(0, end);
   const values = field.values.slice(0, end);
   const rMax = grid[grid.length - 1];
   const x = scaleLinear([0, rMax], [M.left, W - M.right]);
-  const lo = Math.min(0, ...values);
-  const hi = Math.max(...values);
+  const secondValues = second ? resampleOnto(second, grid) : null;
+  const lo = Math.min(0, ...values, ...(secondValues ?? []));
+  const hi = Math.max(...values, ...(secondValues ?? []));
   const y = scaleLinear([lo, hi], [H - M.bottom, M.top]).nice();
   const nodes = showNodes ? zeroCrossings(grid, values) : [];
   const path = values
@@ -66,6 +89,12 @@ function FieldPlot({
         <span className="plot-provenance">
           {`${field.label} [${field.unit}]`} <Badge provenance={field.provenance} />
         </span>
+        {second && (
+          <span className="legend-inline">
+            <span>— {field.label}</span>
+            <span>┄ {secondLabel ?? second.label}</span>
+          </span>
+        )}
       </figcaption>
       <svg viewBox={`0 0 ${W} ${H}`} role="img" className="plot-static">
         {x.ticks(6).map((t) => (
@@ -105,6 +134,15 @@ function FieldPlot({
           <line x1={M.left} x2={W - M.right} y1={y(0)} y2={y(0)} className="zero" />
         )}
         <path d={path} className="curve" />
+        {secondValues && (
+          <path
+            d={secondValues
+              .map((v, i) => `${i === 0 ? "M" : "L"}${x(grid[i]).toFixed(2)},${y(v).toFixed(2)}`)
+              .join(" ")}
+            className="curve curve-compare"
+            strokeDasharray="5 4"
+          />
+        )}
         {nodes.map((r) => (
           <g key={r} className="node-mark">
             <line x1={x(r)} x2={x(r)} y1={y(0) - 5} y2={y(0) + 5} />
@@ -165,11 +203,59 @@ export function RadialPlots({
   );
 }
 
+export function ComparisonPanel({ comparison }: { comparison: DensityComparison }) {
+  const q = comparison.displaced_charge;
+  const bar = q.provenance.error_estimate ?? 0;
+  const resolved = q.value > bar;
+  const decimals = bar > 0 ? Math.max(0, 2 - Math.floor(Math.log10(bar))) : 3;
+  return (
+    <section className="density-compare">
+      <p className="caption">
+        {resolved
+          ? `The two models place ${q.value.toFixed(decimals)} ± ${bar.toFixed(decimals)} electrons differently.`
+          : `The gap (${q.value.toFixed(decimals)} electrons) is inside its own error bar (${bar.toFixed(decimals)}), so this comparison does not resolve a disagreement.`}{" "}
+        <Badge provenance={q.provenance} />
+      </p>
+      <p className="caption">
+        Both curves integrate to the same electron count, so the signed
+        difference is zero and half the absolute difference is the whole story.
+      </p>
+      <table className="shell-table">
+        <thead>
+          <tr>
+            <th>shell</th>
+            <th>GSZ peak [bohr]</th>
+            <th>HF peak [bohr]</th>
+          </tr>
+        </thead>
+        <tbody>
+          {comparison.shells.map((s) => (
+            <tr key={s.label}>
+              <td>{s.label}</td>
+              <td>
+                {s.gsz_radius === null || s.gsz_radius === undefined
+                  ? "no separate peak"
+                  : `${s.gsz_radius.toFixed(3)}${s.gsz_depth !== null && s.gsz_depth !== undefined && s.gsz_depth < 0.05 ? ` (dimple ${(100 * s.gsz_depth).toFixed(1)}%)` : ""}`}
+              </td>
+              <td>
+                {s.hf_radius === null || s.hf_radius === undefined
+                  ? "no separate peak"
+                  : `${s.hf_radius.toFixed(3)}${s.hf_depth !== null && s.hf_depth !== undefined && s.hf_depth < 0.05 ? ` (dimple ${(100 * s.hf_depth).toFixed(1)}%)` : ""}`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
 export function RadialView() {
-  const { n, l, system, radial, stateInfo, loadRadial } = useAppStore();
+  const { n, l, system, model, config, exchange, pauli, compare, radial, stateInfo, loadRadial } =
+    useAppStore();
   useEffect(() => {
     void loadRadial();
-  }, [n, l, system, loadRadial]);
+  }, [n, l, system, model, config, exchange, pauli, compare, loadRadial]);
 
   if (!radial) {
     return (
@@ -178,6 +264,13 @@ export function RadialView() {
       </div>
     );
   }
+
+  const density = radial.total_density ?? undefined;
+  const comparison = radial.density_comparison ?? undefined;
+  const overlay = comparison ? (model === "hf" ? comparison.gsz : comparison.hf) : undefined;
+  const overlayLabel = comparison
+    ? model === "hf" ? "screened (GSZ)" : "Hartree-Fock"
+    : undefined;
 
   return (
     <div className="view-wrap">
@@ -188,6 +281,16 @@ export function RadialView() {
         }}
       />
       <RadialPlots radial={radial} meanRadius={stateInfo?.mean_radius ?? undefined} />
+      {density && (
+        <FieldPlot
+          field={density}
+          title="D(r), the total electron density"
+          blurb="Every occupied subshell summed. This one is observable; the orbitals above are not."
+          second={overlay}
+          secondLabel={overlayLabel}
+        />
+      )}
+      {comparison && <ComparisonPanel comparison={comparison} />}
       <Disclosure summary="Why the two plots disagree at the nucleus">
         <p className="caption">
           For an s orbital R is largest at r = 0, but P is R² times the shell

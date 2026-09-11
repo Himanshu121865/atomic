@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   createPlaneJob,
   createSampleJob,
+  createHFJob,
   getAbsorption,
   getChannel,
   getClassical,
@@ -14,6 +15,7 @@ import {
   getSpectrum,
   getState,
   getSystems,
+  isHFLevels,
   type Basis,
   type ConstMultipliers,
   type PlaneQuantity,
@@ -24,6 +26,7 @@ import type {
   ConstantsReport,
   CurveOfGrowthInfo,
   ForceLawResult,
+  HFLevels,
   JobMeta,
   LevelsResponse,
   PlaneMeta,
@@ -100,6 +103,17 @@ interface AppState {
   hyperfine: boolean;
   model: AtomModel;
   setModel: (model: AtomModel) => void;
+  hfLevels: HFLevels | null;
+  loadHF: () => Promise<void>;
+  ensureHF: () => Promise<boolean>;
+  config: string | null;
+  setConfig: (config: string | null) => void;
+  exchange: boolean;
+  setExchange: (exchange: boolean) => void;
+  pauli: boolean;
+  setPauli: (pauli: boolean) => void;
+  compare: boolean;
+  setCompare: (compare: boolean) => void;
   setQuantumNumbers: (n: number, l: number, m: number) => void;
   setSystem: (system: string) => void;
   setBasis: (basis: Basis) => void;
@@ -155,6 +169,7 @@ const INVALIDATED = {
   radial: null,
   levels: null,
   spectrum: null,
+  hfLevels: null,
   curveOfGrowth: null,
   absorptionData: null,
   profileZoom: null as [number, number] | null,
@@ -206,6 +221,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   spectrum: null,
   intensities: true,
   model: "gsz",
+  hfLevels: null,
+  config: null,
+  exchange: true,
+  pauli: true,
+  compare: false,
   curveOfGrowth: null,
   absorptionData: null,
   temperatureK: 10000,
@@ -240,6 +260,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
       system,
       ...INVALIDATED,
       model: resolveModel(get().systems, system, get().model),
+      config: null,
+      exchange: true,
+      pauli: true,
+      compare: false,
     }),
   setBasis: (basis) => set({ basis, ...INVALIDATED }),
   setView: (view) => set({ view }),
@@ -273,6 +297,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
         seed: seedCounter++ % 1000000,
         basis: s.basis,
         system: s.system,
+        model: s.model,
+        config: s.config,
+        exchange: s.exchange,
+        pauli: s.pauli,
       });
       const meta = await waitMeta(job.id);
       if (meta.kind !== "sample") throw new Error(`unexpected job kind ${(meta as JobMeta).kind}`);
@@ -299,6 +327,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
         basis: s.basis,
         system: s.system,
         resolution: 256,
+        model: s.model,
+        config: s.config,
+        exchange: s.exchange,
+        pauli: s.pauli,
       });
       const meta = await waitMeta(job.id);
       if (meta.kind !== "plane") throw new Error(`unexpected job kind ${(meta as JobMeta).kind}`);
@@ -311,7 +343,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadRadial: async () => {
     const s = get();
-    set({ radial: await getRadial(s.n, s.l, s.system, 400) });
+    set({
+      radial: await getRadial(
+        s.n, s.l, s.system, 400, s.model, s.config, s.exchange, s.pauli, s.compare,
+      ),
+    });
   },
 
   loadLevels: async () => {
@@ -363,6 +399,50 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setEField: (eField) => set({ eField, levels: null }),
   setHyperfine: (hyperfine) => set({ hyperfine, levels: null }),
   setModel: (model) => set({ model, ...INVALIDATED }),
+  setConfig: (config) => set({ config, ...INVALIDATED }),
+  setExchange: (exchange) =>
+    set((s) => ({
+      exchange,
+      pauli: exchange ? true : s.pauli,
+      ...INVALIDATED,
+    })),
+  setPauli: (pauli) =>
+    set({
+      pauli,
+      exchange: pauli,
+      config: null,
+      ...INVALIDATED,
+    }),
+  setCompare: (compare) => set({ compare, radial: null }),
+
+  loadHF: async () => {
+    const s = get();
+    const info = s.systems.find((x) => x.key === s.system);
+    if (info === undefined || info.kind !== "screened") {
+      set({ hfLevels: null });
+      return;
+    }
+    try {
+      const job = await createHFJob({
+        z: info.z,
+        config: s.config ?? undefined,
+        exchange: s.exchange,
+        pauli: s.pauli,
+      });
+      const meta = await waitMeta(job.id);
+      set({ hfLevels: isHFLevels(meta) ? meta : null });
+    } catch {
+      set({ hfLevels: null });
+    }
+  },
+
+  ensureHF: async () => {
+    if (get().systems.length === 0) await get().loadSystems();
+    if (get().model !== "hf") return true;
+    if (get().hfLevels !== null) return true;
+    await get().loadHF();
+    return get().hfLevels !== null;
+  },
 
   setLabConst: (partial) => {
     const labConst = { ...get().labConst, ...partial };

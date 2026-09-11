@@ -141,7 +141,7 @@ export function Select({
 }: {
   label: string;
   value: string;
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; disabled?: boolean }[];
   onChange: (v: string) => void;
 }) {
   return (
@@ -149,7 +149,7 @@ export function Select({
       <span className="control-label">{label}</span>
       <select value={value} onChange={(e) => onChange(e.target.value)}>
         {options.map((o) => (
-          <option key={o.value} value={o.value}>
+          <option key={o.value} value={o.value} disabled={o.disabled}>
             {o.label}
           </option>
         ))}

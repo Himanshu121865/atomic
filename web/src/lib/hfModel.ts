@@ -1,4 +1,4 @@
-import type { SystemInfo } from "../api/types";
+import type { HFLevels, SystemInfo } from "../api/types";
 import type { AtomModel } from "../lib/urlState";
 
 export const HF_ORBITAL_CAPTION =
@@ -19,4 +19,27 @@ export function resolveModel(
   model: AtomModel,
 ): AtomModel {
   return gszAvailable(systems, system) ? model : "hf";
+}
+
+export function compareAvailable(systems: SystemInfo[], system: string): boolean {
+  const info = systems.find((s) => s.key === system);
+  return info !== undefined && info.kind === "screened" && info.has_gsz;
+}
+
+export function resolveCompare(
+  systems: SystemInfo[],
+  system: string,
+  compare: boolean,
+): boolean {
+  return compareAvailable(systems, system) && compare;
+}
+
+export function subshellAvailable(
+  hf: HFLevels | null,
+  model: AtomModel,
+  n: number,
+  l: number,
+): boolean {
+  if (model !== "hf" || hf === null) return true;
+  return hf.orbitals.some((o) => o.n === n && o.l === l);
 }

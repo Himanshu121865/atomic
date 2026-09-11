@@ -1,21 +1,39 @@
+import { useEffect, useState } from "react";
 import { clampState } from "../lib/quantum";
 import type { Basis, PlaneQuantity } from "../api/client";
 import type { AtomModel, ColorMode, ViewMode } from "../lib/urlState";
-import { gszAvailable } from "../lib/hfModel";
+import { compareAvailable, gszAvailable, subshellAvailable } from "../lib/hfModel";
 import { useAppStore } from "../state/store";
-import { Choice, ControlGroup, Select, Slider } from "./Field";
+import { Choice, ControlGroup, Select, Slider, Toggle } from "./Field";
 
 const PRESET_SYSTEMS = ["h", "d", "t", "mu-h", "ps", "he+"];
 const COUNTS = [10000, 100000, 500000];
+const CONFIG_RE = /^(\d[spdfgh]\d+)( \d[spdfgh]\d+)*$/;
 
 export function Controls() {
   const {
     n, l, m, system, basis, view, colorMode, planeQuantity, count,
-    systems, model, setQuantumNumbers, setSystem, setBasis, setView,
+    systems, model, config, exchange, pauli, compare, hfLevels,
+    setQuantumNumbers, setSystem, setBasis, setView,
     setColorMode, setPlaneQuantity, setCount, setModel,
+    setConfig, setExchange, setPauli, setCompare, ensureHF,
   } = useAppStore();
 
   const hasGsz = gszAvailable(systems, system);
+  const canCompare = compareAvailable(systems, system);
+  const isScreened = systems.find((s) => s.key === system)?.kind === "screened";
+
+  useEffect(() => {
+    if (model === "hf") void ensureHF();
+  }, [model, ensureHF]);
+
+  const [draft, setDraft] = useState(config ?? "");
+  useEffect(() => setDraft(config ?? ""), [config]);
+  const commitConfig = () => {
+    const trimmed = draft.trim().replace(/\s+/, " ");
+    if (trimmed === "" || CONFIG_RE.test(trimmed)) setConfig(trimmed === "" ? null : trimmed);
+    else setDraft(config ?? "");
+  };
 
   const pick = (nn: number, ll: number, mm: number) => {
     const c = clampState(nn, ll, mm);
@@ -42,6 +60,7 @@ export function Controls() {
           options={Array.from({ length: n }, (_, v) => ({
             value: String(v),
             label: `l = ${v}`,
+            disabled: !subshellAvailable(hfLevels, model, n, v),
           }))}
           onChange={(v) => pick(n, Number(v), m)}
         />
@@ -66,6 +85,17 @@ export function Controls() {
             ]}
           />
         )}
+        {isScreened && (
+          <p className="panel-hint">
+            {model === "gsz"
+              ? "A fitted central field: one potential for every electron, and no self-consistency."
+              : !pauli
+                ? "Counterfactual Hartree-Fock with the occupancy cap lifted: every electron in the 1s. Stationary for this altered model, not a variational bound on the real atom."
+                : !exchange
+                  ? "Counterfactual Hartree-Fock without exchange: distinguishable electrons that still obey the occupancy cap."
+                  : "A self-consistent field, solved per subshell with no fitted parameters. What you see is one orbital, not the total density, which for these atoms is exactly spherical."}
+          </p>
+        )}
         {!hasGsz && systems.length > 0 && (
           <p className="panel-hint">
             Szydlik and Green never published neutral GSZ screening parameters
@@ -74,6 +104,60 @@ export function Controls() {
             for and needs no fitted table, which is the only reason this atom is
             here at all.
           </p>
+        )}
+        {isScreened && (
+          <label className="control-text">
+            <span className="control-label">configuration</span>
+            <input
+              type="text"
+              value={draft}
+              placeholder="Aufbau (ground)"
+              spellCheck={false}
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={commitConfig}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitConfig();
+              }}
+            />
+          </label>
+        )}
+        {isScreened && (
+          <Toggle
+            label="Compare both models"
+            checked={compare}
+            disabled={!canCompare}
+            disabledReason="This needs both models, and only one of them has parameters for this element."
+            onChange={setCompare}
+            why="Draws the total density under both models on one axis, with the number of electrons they place differently. The orbital plots stay on the model selected above."
+          />
+        )}
+        {isScreened && model === "hf" && (
+          <>
+            <Toggle
+              label="distinguishable electrons"
+              checked={!exchange}
+              disabled={!pauli}
+              disabledReason="The switch below forces this on: exchange energy comes from antisymmetry, and antisymmetry is the exclusion principle."
+              onChange={(v) => setExchange(!v)}
+              why={
+                !pauli
+                  ? undefined
+                  : exchange
+                    ? "Exchange on. The wavefunction stays antisymmetric, as it is in this universe."
+                    : "Counterfactual. Exchange is gone, so the wavefunction is a product instead of a determinant. The Pauli occupancies are untouched, so this is not electrons piling into 1s."
+              }
+            />
+            <Toggle
+              label="no Pauli exclusion"
+              checked={!pauli}
+              onChange={(v) => setPauli(!v)}
+              why={
+                pauli
+                  ? "Occupancies are capped at 2(2l+1), which is why the atom has shells and the periodic table has periods."
+                  : "Counterfactual, and the stronger one. The cap is gone, so every electron falls into the 1s: one level, no shells, no chemistry."
+              }
+            />
+          </>
         )}
         <Choice<Basis>
           legend="basis"
