@@ -499,6 +499,39 @@ class ComparisonModel(BaseModel):
         )
 
 
+class ShellPeakModel(BaseModel):
+    label: str
+    gsz_radius: float | None
+    hf_radius: float | None
+    gsz_depth: float | None
+    hf_depth: float | None
+
+
+class DensityComparisonModel(BaseModel):
+    gsz: FieldModel
+    hf: FieldModel
+    displaced_charge: QuantityModel
+    shells: list[ShellPeakModel]
+    provenance: ProvenanceModel
+
+    @classmethod
+    def from_comparison(cls, c) -> "DensityComparisonModel":
+        return cls(
+            gsz=FieldModel.from_field(c.gsz),
+            hf=FieldModel.from_field(c.hf),
+            displaced_charge=QuantityModel.from_quantity(c.displaced_charge),
+            shells=[
+                ShellPeakModel(
+                    label=s.label,
+                    gsz_radius=s.gsz_radius, hf_radius=s.hf_radius,
+                    gsz_depth=s.gsz_depth, hf_depth=s.hf_depth,
+                )
+                for s in c.shells
+            ],
+            provenance=ProvenanceModel.from_provenance(c.provenance),
+        )
+
+
 class ReferenceItemModel(BaseModel):
     label: str
     energy: QuantityModel

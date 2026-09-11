@@ -5,6 +5,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal
 
 import numpy as np
@@ -12,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from pydantic import Field as PydanticField
 
 import atomic
@@ -32,6 +33,7 @@ from atomic.analytic.zeeman import zeeman_sublevels
 from atomic.atoms import (
     ATOM_KEYS,
     SUBSHELL_LABELS,
+    Configuration,
     atom_for_key,
     aufbau_configuration,
     element_by_z,
@@ -46,16 +48,24 @@ from atomic.broadening import synthesize
 from atomic.classical import classical_ghost
 from atomic.constants import ALPHA, BOHR_RADIUS_PM, HARTREE_EV
 from atomic.constants_lab import analyze_constants
-from atomic.hf_atom import HFResult, solve_hartree_fock
+from atomic.density_compare import compare_total_densities
+from atomic.hf_atom import (
+    HFResult,
+    evaluate_hf_state,
+    hf_radial,
+    hf_total_radial_density,
+    solve_hartree_fock,
+)
 from atomic.numerics.expression import ExpressionError
 from atomic.numerics.force_law import PRESETS, force_law_levels, free_form_levels
-from atomic.plane import PlaneGrid, plane_grid, screened_plane_grid
+from atomic.plane import PlaneGrid, hf_plane_grid, plane_grid, screened_plane_grid
 from atomic.populations import ThermalConditions
 from atomic.provenance import Fidelity, Field, Provenance, Quantity
-from atomic.sampling import SampleCloud, sample_density, sample_screened_density
+from atomic.sampling import SampleCloud, sample_density, sample_hf_density, sample_screened_density
 from atomic.screened_atom import (
     evaluate_screened_state,
     screened_radial,
+    screened_total_radial_density,
     solve_screened_atom,
 )
 from atomic.server.jobs import Job, JobStatus, JobStore
@@ -66,6 +76,7 @@ from atomic.server.schemas import (
     ComparisonModel,
     ConstantsReportModel,
     CurveOfGrowthModel,
+    DensityComparisonModel,
     FieldModel,
     ForceLawModel,
     HFOrbitalModel,
@@ -214,6 +225,8 @@ class RadialResponse(BaseModel):
     system: SystemModel
     r_wavefunction: FieldModel
     radial_probability: FieldModel
+    total_density: FieldModel | None = None
+    density_comparison: DensityComparisonModel | None = None
 
 
 class SpectrumResponse(BaseModel):
@@ -230,7 +243,25 @@ class SpectrumResponse(BaseModel):
     profile_note: str | None = None
 
 
-class SampleRequest(BaseModel):
+class ManyElectronRequest(BaseModel):
+    model: Literal["gsz", "hf"] = "gsz"
+    config: str | None = None
+    exchange: bool = True
+    pauli: bool = True
+
+    @model_validator(mode="after")
+    def _pauli_off_implies_exchange_off(self) -> "ManyElectronRequest":
+        if self.model == "hf" and not self.pauli and self.exchange:
+            raise ValueError(
+                "pauli=false requires exchange=false: exchange energy is a "
+                "consequence of antisymmetry and the exclusion principle IS "
+                "antisymmetry, so with the principle off there is nothing for "
+                "an exchange integral to act on"
+            )
+        return self
+
+
+class SampleRequest(ManyElectronRequest):
     n: int
     l: int
     m: int
@@ -263,7 +294,7 @@ class SampleMetaModel(BaseModel):
     channels: list[ChannelModel]
 
 
-class PlaneRequest(BaseModel):
+class PlaneRequest(ManyElectronRequest):
     n: int
     l: int
     m: int
@@ -284,22 +315,35 @@ class HFRequest(BaseModel):
     z: int
     n_electrons: int | None = None
     config: str | None = None
+    exchange: bool = True
+    pauli: bool = True
+
+    @model_validator(mode="after")
+    def _pauli_off_implies_exchange_off(self) -> "HFRequest":
+        if not self.pauli and self.exchange:
+            raise ValueError(
+                "pauli=false requires exchange=false: exchange energy is a "
+                "consequence of antisymmetry and the exclusion principle IS "
+                "antisymmetry, so with the principle off there is nothing for "
+                "an exchange integral to act on"
+            )
+        return self
 
 
 _HF_MAX_N = 3
 _HF_MAX_Z = 36
 
 
-def _parse_config_or_422(text: str):
+def _parse_config_or_422(text: str, pauli: bool = True):
     try:
         cfg = parse_config(text)
-        validate_config(cfg)
+        validate_config(cfg, pauli)
     except (ValueError, IndexError) as exc:
         raise HTTPException(status_code=422, detail=f"bad config: {exc}") from exc
     return cfg
 
 
-def _validate_hf_request(z: int, n_electrons: int, config) -> None:
+def _validate_hf_request(z: int, n_electrons: int, config, pauli: bool = True) -> None:
     if not 1 <= z <= _HF_MAX_Z:
         raise HTTPException(
             status_code=400,
@@ -315,7 +359,7 @@ def _validate_hf_request(z: int, n_electrons: int, config) -> None:
             detail=f"electron count must be in [1, Z+1] = [1, {z + 1}], got {n_electrons}",
         )
     try:
-        validate_config(config)
+        validate_config(config, pauli)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if total_electrons(config) != n_electrons:
@@ -344,6 +388,53 @@ def _validate_hf_request(z: int, n_electrons: int, config) -> None:
 
 def _hf_channel(n: int, l: int) -> str:
     return f"P_{n}{SUBSHELL_LABELS[l]}"
+
+
+def _many_electron_target(
+    system: str, config: str | None, pauli: bool
+) -> tuple[int, int, Configuration]:
+    if not is_atom_key(system):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"this model needs an atom with a known electron count, "
+                f"and {system!r} is a one-electron system; its exact "
+                f"wavefunction is already in the other views, so there "
+                f"is nothing a self-consistent field would add"
+            ),
+        )
+    element = atom_for_key(system)
+    n_electrons = element.z
+    cfg = (
+        aufbau_configuration(n_electrons, pauli)
+        if config is None
+        else _parse_config_or_422(config, pauli)
+    )
+    _validate_hf_request(element.z, n_electrons, cfg, pauli)
+    return element.z, n_electrons, cfg
+
+
+def _hf_view_target(req) -> tuple[int, int, Configuration]:
+    z, n_electrons, config = _many_electron_target(
+        req.system, req.config, req.pauli
+    )
+    if (req.n, req.l) not in [nl for nl, _ in config]:
+        held = ", ".join(f"{n}{SUBSHELL_LABELS[l]}" for (n, l), _ in config)
+        why = (
+            "the occupancy cap is lifted, so every electron is in the 1s and no "
+            "other orbital exists to be an eigenfunction of anything"
+            if not req.pauli
+            else "one Fock operator is built per occupied subshell, so there is "
+            "no operator for an empty one"
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"subshell {req.n}{SUBSHELL_LABELS[req.l]} is not occupied in "
+                f"Z={z}, N={n_electrons} (which holds {held}); {why}"
+            ),
+        )
+    return z, n_electrons, config
 
 
 def _hf_symbol(z: int) -> str | None:
@@ -450,8 +541,12 @@ def _screened_element(key: str):
             status_code=400,
             detail=(
                 f"{element.name} has no published GSZ screening parameters: "
-                f"Szydlik and Green (1974) tabulate neutral He to P and Ar "
-                f"and skip Z = 16 and 17."
+                f"Szydlik and Green, Phys. Rev. A 9, 1885 (1974), tabulate "
+                f"neutral He to P and Ar and skip Z = 16 and 17. Inventing "
+                f"them would mean shipping physics with no source. Ask "
+                f"for model='hf' instead: Hartree-Fock builds its potential "
+                f"out of the orbitals it is solving for and needs no fitted "
+                f"table, which is why this atom is offered at all"
             ),
         )
     return element
@@ -546,13 +641,24 @@ def create_app() -> FastAPI:
 
     @app.get("/api/systems", response_model=SystemsResponse)
     def systems() -> SystemsResponse:
+        def describe(element) -> str:
+            if has_gsz_parameters(element.z):
+                return (
+                    f"{element.name}: GSZ screened central-field model "
+                    f"(APPROXIMATION), or self-consistent Hartree-Fock."
+                )
+            return (
+                f"{element.name}: Hartree-Fock only (APPROXIMATION). Szydlik "
+                f"and Green never published neutral GSZ screening parameters "
+                f"for Z = {element.z}, and Hartree-Fock needs none."
+            )
+
         hydrogenic = [SystemModel.from_system(s) for s in list_systems()]
         screened = [
             SystemModel.from_atom(
-                atom_for_key(k), atom_for_key(k).z,
-                f"{atom_for_key(k).name}: GSZ screened central-field model (APPROXIMATION).",
+                atom_for_key(k), atom_for_key(k).z, describe(atom_for_key(k)),
             )
-            for k in ATOM_KEYS if has_gsz_parameters(atom_for_key(k).z)
+            for k in ATOM_KEYS
         ]
         return SystemsResponse(systems=hydrogenic + screened)
 
@@ -987,13 +1093,75 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/api/radial/{n}/{l}", response_model=RadialResponse)
-    def radial(n: int, l: int, system: str = "h", points: int = 400) -> RadialResponse:
+    def radial(
+        n: int, l: int, system: str = "h", points: int = 400,
+        model: Literal["gsz", "hf"] = "gsz",
+        config: str | None = None,
+        exchange: bool = True,
+        pauli: bool = True,
+        compare: bool = False,
+    ) -> RadialResponse:
         _validate_state(n, l, 0)
         if not 50 <= points <= 2000:
             raise HTTPException(status_code=422, detail="points must be in [50, 2000]")
+
+        def _comparison() -> DensityComparisonModel | None:
+            if not compare:
+                return None
+            z, n_electrons, cfg = _many_electron_target(system, config, pauli)
+            _screened_element(system)
+            return DensityComparisonModel.from_comparison(
+                compare_total_densities(
+                    z, n_electrons, config=cfg, exchange=exchange, pauli=pauli,
+                )
+            )
+
+        if model == "hf":
+            if not pauli and exchange:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "pauli=false requires exchange=false: exchange energy "
+                        "is a consequence of antisymmetry and the exclusion "
+                        "principle IS antisymmetry, so with the principle off "
+                        "there is nothing for an exchange integral to act on"
+                    ),
+                )
+            hf_z, hf_n, hf_config = _hf_view_target(
+                SimpleNamespace(system=system, config=config, pauli=pauli, n=n, l=l)
+            )
+            rw, p = hf_radial(
+                hf_z, hf_n, n, l, points=points,
+                config=hf_config, exchange=exchange, pauli=pauli,
+            )
+            density = hf_total_radial_density(
+                hf_z, hf_n, config=hf_config, exchange=exchange, pauli=pauli,
+                points=points,
+            )
+            element = atom_for_key(system)
+            return RadialResponse(
+                n=n, l=l,
+                system=SystemModel.from_atom(
+                    element, element.z,
+                    f"{element.name}: self-consistent Hartree-Fock "
+                    f"(APPROXIMATION; COUNTERFACTUAL with a switch thrown).",
+                ),
+                r_wavefunction=FieldModel.from_field(rw),
+                radial_probability=FieldModel.from_field(p),
+                total_density=FieldModel.from_field(density),
+                density_comparison=_comparison(),
+            )
         if is_atom_key(system):
             element = _screened_element(system)
             rw, prob = screened_radial(element.z, element.z, n, l, points=points)
+            cfg = (
+                aufbau_configuration(element.z)
+                if config is None
+                else _parse_config_or_422(config)
+            )
+            density = screened_total_radial_density(
+                element.z, element.z, config=cfg, points=points,
+            )
             return RadialResponse(
                 n=n, l=l,
                 system=SystemModel.from_atom(
@@ -1001,6 +1169,8 @@ def create_app() -> FastAPI:
                 ),
                 r_wavefunction=FieldModel.from_field(rw),
                 radial_probability=FieldModel.from_field(prob),
+                total_density=FieldModel.from_field(density),
+                density_comparison=_comparison(),
             )
         sys_ = _resolve_system(system)
         mu = sys_.mu_ratio.value
@@ -1024,6 +1194,7 @@ def create_app() -> FastAPI:
             system=SystemModel.from_system(sys_),
             r_wavefunction=FieldModel.from_field(rw),
             radial_probability=FieldModel.from_field(prob),
+            density_comparison=_comparison(),
         )
 
     @app.get("/api/constants", response_model=ConstantsReportModel)
@@ -1098,8 +1269,30 @@ def create_app() -> FastAPI:
     @app.post("/api/jobs/sample", response_model=JobModel)
     async def create_sample_job(req: SampleRequest) -> JobModel:
         _validate_state(req.n, req.l, req.m)
+        hf_target = _hf_view_target(req) if req.model == "hf" else None
         job = jobs.create()
         app.state.job_systems[job.id] = req.system
+
+        if hf_target is not None:
+            hf_z, hf_n, hf_config = hf_target
+            app.state.job_models[job.id] = "hf"
+
+            def work(progress):
+                cloud = sample_hf_density(
+                    hf_z, hf_n, req.n, req.l, req.m, req.count,
+                    seed=req.seed, progress=lambda f: progress(0.9 * f),
+                    basis=req.basis, config=hf_config,
+                    exchange=req.exchange, pauli=req.pauli,
+                )
+                psi = evaluate_hf_state(
+                    hf_z, hf_n, req.n, req.l, req.m,
+                    cloud.positions.astype(np.float64), basis=req.basis,
+                    config=hf_config, exchange=req.exchange, pauli=req.pauli,
+                )
+                progress(1.0)
+                return SampleJobResult(cloud=cloud, psi=psi)
+
+            return _dispatch(job, work)
 
         if is_atom_key(req.system):
             element = _screened_element(req.system)
@@ -1142,8 +1335,23 @@ def create_app() -> FastAPI:
         _validate_state(req.n, req.l, req.m)
         if not 16 <= req.resolution <= 1024:
             raise HTTPException(status_code=422, detail="resolution must be in [16, 1024]")
+        hf_target = _hf_view_target(req) if req.model == "hf" else None
         job = jobs.create()
         app.state.job_systems[job.id] = req.system
+
+        if hf_target is not None:
+            hf_z, hf_n, hf_config = hf_target
+            app.state.job_models[job.id] = "hf"
+
+            def work(progress):
+                return hf_plane_grid(
+                    hf_z, hf_n, req.n, req.l, req.m,
+                    quantity=req.quantity, basis=req.basis,
+                    resolution=req.resolution, progress=progress,
+                    config=hf_config, exchange=req.exchange, pauli=req.pauli,
+                )
+
+            return _dispatch(job, work)
 
         if is_atom_key(req.system):
             element = _screened_element(req.system)
@@ -1174,16 +1382,18 @@ def create_app() -> FastAPI:
     async def create_hf_job(req: HFRequest) -> JobModel:
         n_electrons = req.z if req.n_electrons is None else req.n_electrons
         config = (
-            aufbau_configuration(n_electrons)
+            aufbau_configuration(n_electrons, req.pauli)
             if req.config is None
-            else _parse_config_or_422(req.config)
+            else _parse_config_or_422(req.config, req.pauli)
         )
-        _validate_hf_request(req.z, n_electrons, config)
+        _validate_hf_request(req.z, n_electrons, config, req.pauli)
 
         job = jobs.create()
 
         def work(progress):
-            result = solve_hartree_fock(req.z, n_electrons, config)
+            result = solve_hartree_fock(
+                req.z, n_electrons, config, req.exchange, req.pauli
+            )
             progress(1.0)
             return result
 
