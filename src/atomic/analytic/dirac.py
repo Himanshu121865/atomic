@@ -1,11 +1,3 @@
-"""The exact Dirac-Coulomb energy for hydrogen-like atoms, the refinement that
-the perturbative fine structure points at.
-
-This is the closed form of the one-body Dirac equation in a point Coulomb
-field. It is EXACT for that model, and that model still omits the Lamb shift and
-QED, hyperfine structure, finite nuclear size, and two-body recoil beyond
-reduced-mass scaling. See docs/specs/phase7-fine-structure.md.
-"""
 
 import math
 
@@ -42,7 +34,6 @@ def _validate(n: int, j: float, Z: int, alpha: float) -> None:
 def dirac_energy(
     n: int, j: float, Z: int = 1, mu_ratio: float = 1.0, alpha: float = ALPHA
 ) -> Quantity:
-    """The exact Dirac-Coulomb energy E(n, j), in hartree, rest energy subtracted."""
     _validate(n, j, Z, alpha)
     gamma = math.sqrt((j + 0.5) ** 2 - (Z * alpha) ** 2)
     d = n - (j + 0.5) + gamma
@@ -76,7 +67,6 @@ def dirac_energy(
 def dirac_fine_splitting(
     n: int, l: int, Z: int = 1, mu_ratio: float = 1.0, alpha: float = ALPHA
 ) -> float:
-    """E(n, j=l+1/2) - E(n, j=l-1/2) in hartree. Needs l >= 1."""
     if l < 1:
         raise ValueError(f"fine splitting needs l >= 1, got {l}")
     hi = dirac_energy(n, l + 0.5, Z=Z, mu_ratio=mu_ratio, alpha=alpha).value

@@ -1,17 +1,3 @@
-"""The Zeeman effect: fine structure plus linear Zeeman, across the Breit-Rabi
-crossover.
-
-For a shell n, each (l, m_j) with both j = l +/- 1/2 present forms a 2x2
-block (fine-structure diagonal plus linear-Zeeman coupling through <S_z>);
-stretched states (|m_j| = l+1/2) and all of l=0 are 1x1 blocks, exactly linear
-in B. The 2x2 eigenvalues are the closed-form Breit-Rabi roots, so no numerical
-eigensolver is needed and the result is exact-of-the-model with zero numerical
-error.
-
-This is APPROXIMATION by construction: the linear-Zeeman model omits the
-diamagnetic B^2 term and uses g_s = 2. It turns COUNTERFACTUAL once alpha is
-altered. See docs/specs/phase7-fine-structure.md.
-"""
 
 import math
 from dataclasses import dataclass
@@ -22,9 +8,9 @@ from atomic.analytic.hydrogen import validate_quantum_numbers
 from atomic.constants import ALPHA, B0_TESLA
 from atomic.provenance import Fidelity, Provenance, Quantity
 
-_MU_B_AU = 0.5  # the Bohr magneton in atomic units (e = hbar = m_e = 1)
-MU_B_PER_TESLA = _MU_B_AU / B0_TESLA  # hartree per tesla, the prefactor on (J_z + S_z)
-_G2 = 2.0 * 0.00116  # the anomalous-moment scale on the spin Zeeman part
+_MU_B_AU = 0.5
+MU_B_PER_TESLA = _MU_B_AU / B0_TESLA
+_G2 = 2.0 * 0.00116
 
 _Z_ASSUMPTIONS = (
     "the linear (paramagnetic) Zeeman term only, neglecting the diamagnetic B^2 term",
@@ -37,14 +23,13 @@ _Z_ASSUMPTIONS = (
 @dataclass(frozen=True)
 class ZeemanSublevel:
     m_j: float
-    branch: str            # "upper" | "lower" | "single"
-    j_label: float         # the low-field good quantum number, the j at B=0
-    high_field_label: str  # the (m_l, m_s) this state approaches at large B
+    branch: str
+    j_label: float
+    high_field_label: str
     energy: Quantity
 
 
 def lande_g(l: int, j: float) -> float:
-    """The Lande g-factor for a one-electron (s = 1/2) state."""
     s = 0.5
     return 1.0 + (j * (j + 1.0) + s * (s + 1.0) - l * (l + 1.0)) / (2.0 * j * (j + 1.0))
 
@@ -54,7 +39,6 @@ def _high_field_label(m_j: float, m_s: float) -> str:
 
 
 def _mean_sq_radius(n: int, l: int, Z: int) -> float:
-    """<r^2> in bohr^2 for a hydrogenic (n,l) state, which sets the diamagnetic scale."""
     return (n * n / (2.0 * Z * Z)) * (5.0 * n * n + 1.0 - 3.0 * l * (l + 1.0))
 
 
@@ -62,7 +46,6 @@ def zeeman_sublevels(
     n: int, l: int, Z: int = 1, mu_ratio: float = 1.0, m_over_M: float = 0.0,
     alpha: float = ALPHA, b_tesla: float = 0.0, dirac: bool = False,
 ) -> list[ZeemanSublevel]:
-    """The Breit-Rabi sublevels for the (n, l) shell in a field B (tesla)."""
     validate_quantum_numbers(n, l)
     if Z < 1:
         raise ValueError(f"Z must be >= 1, got {Z}")
@@ -76,7 +59,7 @@ def zeeman_sublevels(
             n, l, j, Z=Z, mu_ratio=mu_ratio, m_over_M=m_over_M, alpha=alpha
         )
 
-    muB_b = MU_B_PER_TESLA * b_tesla  # hartree
+    muB_b = MU_B_PER_TESLA * b_tesla
     altered = not math.isclose(alpha, ALPHA, rel_tol=1e-12)
     fidelity = Fidelity.COUNTERFACTUAL if altered else Fidelity.APPROXIMATION
     diamag = 0.125 * (b_tesla / B0_TESLA) ** 2 * _mean_sq_radius(n, l, Z)
@@ -110,10 +93,10 @@ def zeeman_sublevels(
 
     j_up = l + 0.5
     e_up = diag(j_up)
-    m_values = [(-(l + 0.5) + k) for k in range(2 * l + 2)]  # -(l+1/2) .. +(l+1/2)
+    m_values = [(-(l + 0.5) + k) for k in range(2 * l + 2)]
     out: list[ZeemanSublevel] = []
     for m_j in m_values:
-        stretched = abs(m_j) > l  # |m_j| == l+1/2
+        stretched = abs(m_j) > l
         if l == 0 or stretched:
             zeeman_diag = muB_b * m_j * (2 * l + 2) / denom
             m_s = math.copysign(0.5, m_j)
@@ -128,10 +111,10 @@ def zeeman_sublevels(
         h01 = muB_b * math.sqrt((l + 0.5) ** 2 - m_j * m_j) / denom
         mean = 0.5 * (h00 + h11)
         disc = math.hypot(0.5 * (h00 - h11), h01)
-        out.append(make(  # upper -> state A: (m_l=m_j-1/2, m_s=+1/2)
+        out.append(make(
             mean + disc, m_j, "upper", j_up, 0.5, e_up.provenance.error_estimate,
         ))
-        out.append(make(  # lower -> state B: (m_l=m_j+1/2, m_s=-1/2)
+        out.append(make(
             mean - disc, m_j, "lower", l - 0.5, -0.5, e_dn.provenance.error_estimate,
         ))
     return out

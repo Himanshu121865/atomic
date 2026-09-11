@@ -1,26 +1,3 @@
-"""Magnetic-dipole hyperfine structure: the nuclear spin talking to the
-electron.
-
-The nuclear spin I couples to the electron's angular momentum J, splitting
-each level into total-angular-momentum states F = I + J, |I-J| .. I+J. For an
-s-electron (l = 0) the coupling is the Fermi contact interaction, driven by the
-electron density at the nucleus. The flagship case is hydrogen 1s: I = J = 1/2,
-F = 0 or 1, and the F=1 -> F=0 transition is the 21 cm line, 1420.4 MHz.
-
-The hyperfine coupling constant for an ns level (energy, hartree):
-
-    A(ns) = (2/3) g_e g_I (m_e/m_p) alpha^2 (mu/m_e)^3 (Z^3 / n^3)
-
-g_e is the measured electron moment, g_I = (mu_nuc/mu_N)/I is the nuclear
-g-factor, and m_e/m_p is FIXED: the nuclear magneton mu_N = e hbar / 2 m_p is
-defined with the proton mass for every nucleus, so using the nucleus's own
-mass would be off by a factor of two for deuterium, and
-tests/test_hyperfine.py locks that out.
-
-This is APPROXIMATION tier: a non-relativistic Fermi contact term, s-states
-only, with everything neglected quantified in the error estimate. See
-docs/specs/phase7-fine-structure.md.
-"""
 
 import math
 from dataclasses import dataclass
@@ -32,7 +9,7 @@ from atomic.constants import ALPHA
 from atomic.provenance import Fidelity, Provenance, Quantity
 from atomic.systems import System
 
-_G_E = abs(_sc.physical_constants["electron g factor"][0])          # 2.0023193...
+_G_E = abs(_sc.physical_constants["electron g factor"][0])
 _M_E_OVER_M_P = 1.0 / _sc.physical_constants["proton-electron mass ratio"][0]
 
 _J_S = 0.5
@@ -57,13 +34,6 @@ def hyperfine_constant(
     n: int, Z: int = 1, mu_ratio: float = 1.0, g_I: float = 0.0,
     alpha: float = ALPHA,
 ) -> Quantity:
-    """The hyperfine coupling constant A for the ns level, in hartree.
-
-    A enters the level energies as E(F) = (A/2)[F(F+1) - I(I+1) - J(J+1)].
-    g_I is the nuclear g-factor (mu_nuc / mu_N) / I, and it is 0 for a spin-0
-    nucleus. `alpha` defaults to the real fine-structure constant; passing
-    anything else evaluates the contact term in a counterfactual universe.
-    """
     if n < 1:
         raise ValueError(f"n must be >= 1, got {n}")
     if Z < 1:
@@ -101,12 +71,11 @@ def hyperfine_constant(
 @dataclass(frozen=True)
 class HyperfineLevel:
     F: float
-    shift: Quantity     # the hyperfine shift from the gross ns level, in hartree
-    energy: Quantity    # the gross energy plus that shift, in hartree
+    shift: Quantity
+    energy: Quantity
 
 
 def _f_values(I: float, J: float) -> list[float]:
-    """The total angular momenta F = |I-J| .. I+J, in integer steps."""
     lo = abs(I - J)
     n_steps = round(I + J - lo)
     return [lo + k for k in range(n_steps + 1)]
@@ -116,7 +85,6 @@ def hyperfine_levels(
     n: int, I: float, Z: int = 1, mu_ratio: float = 1.0, g_I: float = 0.0,
     alpha: float = ALPHA,
 ) -> list[HyperfineLevel]:
-    """The F sublevels for the ns level (J = 1/2), each carrying its provenance."""
     A = hyperfine_constant(n, Z=Z, mu_ratio=mu_ratio, g_I=g_I, alpha=alpha)
     e_gross = energy(n, Z=Z, mu_ratio=mu_ratio).value
     J = _J_S
@@ -156,7 +124,7 @@ def hyperfine_levels(
 class Nucleus:
     name: str
     I: float
-    g_I: float          # the nuclear g-factor; 0.0 for a spin-0 nucleus
+    g_I: float
     note: str = ""
 
 
@@ -193,19 +161,11 @@ class HyperfineReport:
     I: float | None = None
     A: Quantity | None = None
     levels: tuple[HyperfineLevel, ...] = ()
-    note: str | None = None      # for instance the spin-0 explanation: available, but no split
-    reason: str | None = None    # why this system has no hyperfine structure
+    note: str | None = None
+    reason: str | None = None
 
 
 def hyperfine_report(n: int, system: System) -> HyperfineReport:
-    """The hyperfine F-levels for the ns shell of a preset system, or an honest
-    reason there are none.
-
-    Returns the F sublevels for a nucleus with a defined moment (H, D, T), a
-    single unsplit level for a spin-0 nucleus (He-4), or available=False with a
-    reason for systems the contact formula does not describe: positronium,
-    muonic hydrogen, and a generic Z with no identified nucleus.
-    """
     key = system.key
     if key in _UNAVAILABLE:
         return HyperfineReport(
