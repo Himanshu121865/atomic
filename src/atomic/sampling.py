@@ -6,6 +6,8 @@ from scipy.integrate import cumulative_trapezoid
 from scipy.special import lpmv
 
 from atomic.analytic.hydrogen import radial_wavefunction, validate_quantum_numbers
+from atomic.atoms import Configuration
+from atomic.hf_atom import hf_radial
 from atomic.numerics.screening import screening_provenance
 from atomic.provenance import Fidelity, Provenance
 from atomic.screened_atom import screened_radial
@@ -193,6 +195,70 @@ def sample_screened_density(
             "raise the CDF grid resolution, the sample count, "
             "or the radial solver resolution"
         ),
+    )
+    return SampleCloud(
+        positions=positions, n=n, l=l, m=m, Z=z, mu_ratio=1.0,
+        basis=basis, provenance=provenance,
+    )
+
+
+def sample_hf_density(
+    z: int,
+    n_electrons: int,
+    n: int,
+    l: int,
+    m: int,
+    count: int,
+    *,
+    seed: int = 0,
+    progress: Callable[[float], None] | None = None,
+    n_chunks: int = 10,
+    basis: str = "complex",
+    config: Configuration | None = None,
+    exchange: bool = True,
+    pauli: bool = True,
+) -> SampleCloud:
+    validate_quantum_numbers(n, l)
+    if abs(m) > l:
+        raise ValueError(f"|m| must be <= l, got m={m}, l={l}")
+    if count < 1:
+        raise ValueError(f"count must be positive, got {count}")
+    if basis not in ("complex", "real"):
+        raise ValueError(f"basis must be 'complex' or 'real', got {basis!r}")
+
+    r_field, _ = hf_radial(
+        z, n_electrons, n, l, points=_R_GRID_POINTS,
+        config=config, exchange=exchange, pauli=pauli,
+    )
+    r_grid, r_cdf, r_max = _radial_inverse_cdf_tabulated(r_field.grid, r_field.values)
+    x_grid, x_cdf = _costheta_inverse_cdf(l, m)
+    phi_sampler = _phi_inverse_cdf(m) if (basis == "real" and m != 0) else None
+    positions = _draw_positions(
+        count, r_grid, r_cdf, x_grid, x_cdf, phi_sampler, seed, n_chunks, progress
+    )
+
+    base = r_field.provenance
+    phi_desc = (
+        "phi uniform (|Y_lm|^2 is phi-independent)"
+        if phi_sampler is None
+        else "phi from analytic real-basis marginal (cos^2/sin^2 m phi)"
+    )
+    provenance = Provenance(
+        fidelity=base.fidelity,
+        method=(
+            f"sampled |psi_nlm|^2 by factorized inverse-CDF Monte-Carlo over a "
+            f"Hartree-Fock R_nl ({basis} basis): r from P(r)=r^2 R^2 "
+            f"(grid N={r_grid.size}, r_max={r_max:g} bohr), cos(theta) from "
+            f"|Theta_lm|^2, {phi_desc}; {base.method}"
+        ),
+        assumptions=base.assumptions
+        + (
+            f"uses the {basis} angular basis",
+            f"drawn from RNG PCG64 seed={seed}, count={count}",
+            "positions are reported in bohr",
+        ),
+        error_estimate=base.error_estimate,
+        refinement=base.refinement,
     )
     return SampleCloud(
         positions=positions, n=n, l=l, m=m, Z=z, mu_ratio=1.0,

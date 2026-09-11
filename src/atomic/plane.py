@@ -6,6 +6,8 @@ import numpy as np
 from atomic.analytic.angular import validate_angular
 from atomic.analytic.hydrogen import validate_quantum_numbers
 from atomic.analytic.wavefunction import evaluate_state
+from atomic.atoms import Configuration
+from atomic.hf_atom import evaluate_hf_state
 from atomic.provenance import Fidelity, Provenance
 from atomic.screened_atom import evaluate_screened_state
 
@@ -165,6 +167,72 @@ def screened_plane_grid(
         refinement=(
             "raise the resolution, the extent, or the radial solver resolution"
         ),
+    )
+    return PlaneGrid(
+        values=values, axis=axis, quantity=quantity, unit=unit, label=label,
+        n=n, l=l, m=m, Z=z, mu_ratio=1.0, basis=basis, provenance=provenance,
+    )
+
+
+def hf_plane_grid(
+    z: int,
+    n_electrons: int,
+    n: int,
+    l: int,
+    m: int,
+    quantity: str = "density",
+    basis: str = "complex",
+    resolution: int = 512,
+    half_extent: float | None = None,
+    progress: Callable[[float], None] | None = None,
+    *,
+    config: Configuration | None = None,
+    exchange: bool = True,
+    pauli: bool = True,
+) -> PlaneGrid:
+    validate_quantum_numbers(n, l)
+    validate_angular(l, m)
+    if quantity not in ("density", "psi"):
+        raise ValueError(f"quantity must be 'density' or 'psi', got {quantity!r}")
+    if resolution < 2:
+        raise ValueError(f"resolution must be >= 2, got {resolution}")
+    z_net = max(z - n_electrons + 1, 1)
+    he = default_half_extent(n, z_net, 1.0) if half_extent is None else float(half_extent)
+    if he <= 0.0:
+        raise ValueError(f"half_extent must be positive, got {he}")
+
+    def evaluator(pos):
+        return evaluate_hf_state(
+            z, n_electrons, n, l, m, pos,
+            basis=basis, config=config, exchange=exchange, pauli=pauli,
+        )
+
+    values, axis, psi_assumptions = _plane_values(
+        evaluator, quantity, resolution, he, progress
+    )
+    fidelity = evaluator(np.zeros((1, 3))).provenance.fidelity
+
+    if quantity == "density":
+        unit = "bohr^-3"
+        label = f"|psi_{n},{l},{m}|^2 on the y=0 plane"
+        qdesc = "|psi|^2 (probability density)"
+        extra = ("the plane y=0 contains the z quantization axis",)
+    else:
+        unit = "bohr^-3/2"
+        label = f"psi_{n},{l},{m} on the y=0 plane"
+        qdesc = "signed psi"
+        extra = (
+            "the plane y=0 contains the z quantization axis",
+            "psi is real on y=0 (e^{i m phi} = +/-1 there), so the signed plot is honest",
+        )
+    provenance = Provenance(
+        fidelity=fidelity,
+        method=(
+            f"evaluated {qdesc} from a Hartree-Fock psi_nlm on a "
+            f"{resolution}x{resolution} y=0 grid, half-extent {he:g} bohr"
+        ),
+        assumptions=psi_assumptions + extra,
+        refinement="raise the resolution, the extent, or the solver mesh refinement",
     )
     return PlaneGrid(
         values=values, axis=axis, quantity=quantity, unit=unit, label=label,
