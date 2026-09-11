@@ -30,12 +30,14 @@ def test_systems_lists_hydrogenic_presets():
     assert systems[4]["nuclear_radius"] is None
 
 
-def test_systems_lists_screened_atoms_without_s_cl():
+def test_systems_lists_s_cl_as_hartree_fock_only():
     with TestClient(app) as client:
         systems = {s["key"]: s for s in client.get("/api/systems").json()["systems"]}
     assert systems["ne"]["kind"] == "screened"
     assert systems["ne"]["has_gsz"] is True
-    assert "s" not in systems and "cl" not in systems
+    assert systems["s"]["has_gsz"] is False
+    assert systems["cl"]["has_gsz"] is False
+    assert "Hartree-Fock" in systems["s"]["description"]
 
 
 def test_state_ground_state_values():
