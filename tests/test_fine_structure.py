@@ -6,7 +6,7 @@ from atomic.constants import ALPHA, HARTREE_EV
 from atomic.provenance import Fidelity
 
 HARTREE_HZ = sc.physical_constants["hartree-hertz relationship"][0]
-MU_H = 1836.152673426 / 1837.152673426  # proton-electron reduced mass ratio
+MU_H = 1836.152673426 / 1837.152673426
 
 
 def test_shift_is_negative_and_j_ordered():
@@ -14,8 +14,8 @@ def test_shift_is_negative_and_j_ordered():
     p12 = fine_structure_shift(2, 1, 0.5).value
     p32 = fine_structure_shift(2, 1, 1.5).value
     assert s12 < 0 and p12 < 0 and p32 < 0
-    assert s12 == pytest.approx(p12)      # same j -> same shift (l-degenerate at alpha^2)
-    assert p32 > p12                       # higher j is less bound
+    assert s12 == pytest.approx(p12)
+    assert p32 > p12
 
 
 def test_2p_splitting_matches_measurement_within_g2_scale():
@@ -28,7 +28,6 @@ def test_2p_splitting_matches_measurement_within_g2_scale():
 
 
 def test_1s_shift_magnitude():
-    # -mu' alpha^2 / 8 hartree = -1.810e-4 eV
     ev = fine_structure_shift(1, 0, 0.5, mu_ratio=MU_H).value * HARTREE_EV
     assert ev == pytest.approx(-1.810e-4, rel=2e-3)
 
@@ -42,9 +41,9 @@ def test_level_energy_composes_bohr_plus_shift():
 
 
 def test_provenance_is_honest():
-    q = fine_structure_shift(2, 1, 0.5, mu_ratio=0.5, m_over_M=1.0)  # positronium-like
+    q = fine_structure_shift(2, 1, 0.5, mu_ratio=0.5, m_over_M=1.0)
     assert q.provenance.fidelity is Fidelity.APPROXIMATION
-    assert q.provenance.error_estimate >= abs(q.value)  # recoil O(1): error >= shift
+    assert q.provenance.error_estimate >= abs(q.value)
     joined = " ".join(q.provenance.assumptions).lower()
     assert "darwin" in joined
     assert "g = 2" in joined or "g=2" in joined
@@ -84,7 +83,7 @@ def test_altered_alpha_is_counterfactual_and_disclosed():
     q = fine_structure_shift(2, 1, 1.5, alpha=0.05)
     assert q.provenance.fidelity is Fidelity.COUNTERFACTUAL
     assert "altered" in q.provenance.method.lower()
-    assert f"{ALPHA:g}" in q.provenance.method          # real value cited
+    assert f"{ALPHA:g}" in q.provenance.method
     assert q.provenance.error_estimate == pytest.approx(
         abs(q.value) * ((1 * 0.05) ** 2 + 2 * 0.00116)
     )

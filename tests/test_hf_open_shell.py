@@ -1,18 +1,3 @@
-"""Hartree-Fock on the atoms that are not closed shells (Phase 21, Task 9).
-
-Two claims are under test. First, that the solver handles a partially filled
-subshell at all, sulfur and chlorine included, which the GSZ model cannot touch
-because Szydlik and Green never published parameters for them. Second, that the
-provenance says what an open shell costs and does not say what it does not:
-"average of configuration" is a real limitation for carbon and an empty one for
-lithium, whose configuration spans a single term.
-
-Every atom from helium to chlorine is solved once, in a module-scoped fixture,
-and shared. The monotonicity test needs each atom's lighter neighbour as well,
-so solving on demand would run some atoms two and three times over; at roughly
-a second for the light ones and several for chlorine, that is the difference
-between a slow test file and an unusable one.
-"""
 
 import pytest
 
@@ -44,16 +29,12 @@ def test_open_shell_atoms_converge(solved, symbol, z):
 
 @pytest.mark.parametrize("symbol,z", NO_GSZ)
 def test_atoms_gsz_cannot_do_now_work(solved, symbol, z):
-    """S and Cl have no Szydlik-Green parameters and the screened model refuses
-    them. Hartree-Fock builds its potential out of the orbitals it is solving
-    for, so it needs no table, and this is the visible payoff."""
     assert z in NO_GSZ_PARAMETERS
     assert solved[z].total_energy.value < 0.0
 
 
 @pytest.mark.parametrize("symbol,z", OPEN_SHELL)
 def test_total_energy_decreases_monotonically_with_z(solved, symbol, z):
-    """A heavier atom binds more tightly. Catches a configuration mis-build."""
     assert solved[z].total_energy.value < solved[z - 1].total_energy.value
 
 
@@ -65,9 +46,6 @@ def test_multi_term_atoms_disclose_the_configuration_average(solved, symbol, z):
 
 @pytest.mark.parametrize("symbol,z", OPEN_SHELL)
 def test_open_shells_disclose_the_spin_restriction(solved, symbol, z):
-    """Every open shell pays for restricted Hartree-Fock, single term or not:
-    both spins share one radial function, so the core cannot polarize around
-    the unpaired electrons."""
     joined = " ".join(solved[z].total_energy.provenance.assumptions)
     assert "spin-polarize" in joined
 
@@ -76,30 +54,18 @@ def test_open_shells_disclose_the_spin_restriction(solved, symbol, z):
 def test_single_term_atoms_do_not_claim_a_term_average_they_do_not_make(
     solved, symbol, z
 ):
-    """Lithium's 2s1 spans 2S alone, fluorine's 2p5 spans 2P alone.
-
-    The average-of-configuration energy is by construction the degeneracy-
-    weighted mean of the configuration's term energies, sum_T (2L+1)(2S+1) E_T
-    over sum_T (2L+1)(2S+1). With one term in the sum that mean IS the term
-    energy, so there is no averaging error to disclose here, and claiming one
-    would inflate the uncertainty a reader thinks the number carries.
-    """
     assert is_single_term(aufbau_configuration(z))
     joined = " ".join(solved[z].total_energy.provenance.assumptions)
     assert "not per term" not in joined
 
 
 def test_closed_shell_does_not_claim_a_term_limitation_it_does_not_have(solved):
-    """Neon has no partially filled subshell, so there is nothing to average
-    over and nothing to spin-polarize; either disclosure would be misleading."""
     joined = " ".join(solved[10].total_energy.provenance.assumptions)
     assert "not per term" not in joined
     assert "spin-polarize" not in joined
 
 
 def test_the_orbital_shape_carries_the_same_disclosure_as_the_energy(solved):
-    """A caller who plots the orbital and never reads total_energy still needs
-    to know the configuration was averaged."""
     for orbital in solved[6].orbitals:
         joined = " ".join(orbital.P.provenance.assumptions)
         assert "average of configuration" in joined
@@ -110,8 +76,5 @@ def test_virial_ratio_holds_for_open_shells(solved):
 
 
 def test_half_filled_shell_energies_are_ordered_by_shell(solved):
-    """Nitrogen's 2p3 must sit above its 2s2, which sits above the 1s2. A sign
-    error in the open-shell exchange term shows up here first, as a valence
-    level that has fallen below the core."""
     energies = {(o.n, o.l): o.energy.value for o in solved[7].orbitals}
     assert energies[(1, 0)] < energies[(2, 0)] < energies[(2, 1)] < 0.0

@@ -1,10 +1,3 @@
-"""Physics validation for the magnetic-dipole hyperfine engine (s-states).
-
-Five independent experimental anchors (both nuclear-spin values, Z = 1 and 2,
-positive and negative moments) lock the non-relativistic Fermi-contact formula.
-A regression in the mass factor, the g-factor convention, or the Z/n scaling
-moves one of these outside tolerance.
-"""
 
 import pytest
 from scipy import constants as sc
@@ -22,12 +15,10 @@ _HA_MHZ = sc.physical_constants["hartree-hertz relationship"][0] / 1e6
 
 
 def _gI(moment_ratio_name: str, spin: float) -> float:
-    """Nuclear g-factor g_I = (mu/mu_N) / I from a CODATA moment ratio."""
     return sc.physical_constants[moment_ratio_name][0] / spin
 
 
 def _mu_ratio(mass_ratio_name: str) -> float:
-    """Reduced-mass ratio mu/m_e for an electron orbiting a nucleus of mass M."""
     big = sc.physical_constants[mass_ratio_name][0]
     return big / (big + 1.0)
 
@@ -48,8 +39,8 @@ def test_hydrogen_2s_scales_as_n_cubed():
     mu = _mu_ratio("proton-electron mass ratio")
     A1 = _A_mhz(1, 1, mu, gI)
     A2 = _A_mhz(2, 1, mu, gI)
-    assert A2 == pytest.approx(177.556, rel=1e-3)          # experiment
-    assert A1 / A2 == pytest.approx(8.0, rel=1e-9)          # exact 1/n^3
+    assert A2 == pytest.approx(177.556, rel=1e-3)
+    assert A1 / A2 == pytest.approx(8.0, rel=1e-9)
 
 
 def test_deuterium_1s_splitting():
@@ -65,7 +56,7 @@ def test_tritium_1s_splitting():
 
 
 def test_helium3_ion_1s_splitting_is_negative():
-    gI = _gI("helion mag. mom. to nuclear magneton ratio", 0.5)  # negative moment
+    gI = _gI("helion mag. mom. to nuclear magneton ratio", 0.5)
     A = _A_mhz(1, 2, _mu_ratio("helion-electron mass ratio"), gI)
     assert A < 0.0
     assert A == pytest.approx(-8665.65, rel=1e-3)
@@ -94,10 +85,10 @@ def test_centroid_theorem_weighted_shifts_sum_to_zero():
 def test_negative_moment_inverts_level_order():
     pos = hyperfine_levels(1, I=0.5, Z=1, mu_ratio=1.0, g_I=+5.5857)
     neg = hyperfine_levels(1, I=0.5, Z=1, mu_ratio=1.0, g_I=-4.2553)
-    hi_pos = max(pos, key=lambda lv: lv.F)  # F=1
+    hi_pos = max(pos, key=lambda lv: lv.F)
     hi_neg = max(neg, key=lambda lv: lv.F)
-    assert hi_pos.shift.value > 0.0   # F=1 above centroid for positive moment
-    assert hi_neg.shift.value < 0.0   # inverted for negative moment
+    assert hi_pos.shift.value > 0.0
+    assert hi_neg.shift.value < 0.0
 
 
 def test_energy_is_gross_plus_shift():
@@ -116,7 +107,7 @@ def test_provenance_is_approximation_with_error_and_neglected_scales():
     assert q.provenance.error_estimate is not None and q.provenance.error_estimate > 0
     joined = " ".join(q.provenance.assumptions).lower()
     assert "contact" in joined
-    assert "l > 0" in joined or "l>0" in joined  # deferred channel disclosed
+    assert "l > 0" in joined or "l>0" in joined
 
 
 
@@ -156,6 +147,5 @@ def test_level_type_and_only_s_states():
     gI = _gI("proton mag. mom. to nuclear magneton ratio", 0.5)
     levels = hyperfine_levels(2, I=0.5, Z=1, mu_ratio=1.0, g_I=gI)
     assert all(isinstance(lv, HyperfineLevel) for lv in levels)
-    # n must be >= 1
     with pytest.raises(ValueError):
         hyperfine_constant(0, Z=1, mu_ratio=1.0, g_I=gI)

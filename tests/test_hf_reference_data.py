@@ -1,6 +1,3 @@
-"""The vendored Hartree-Fock energies are the yardstick the SCF solver is
-measured against, so a transcription slip here would silently redefine
-"correct". These tests guard the transcription, not the physics."""
 
 import pytest
 
@@ -17,8 +14,6 @@ def test_metadata_is_present_and_dated():
 
 
 def test_transcription_source_is_disclosed():
-    """The numbers came from a mirror of the tables, not the printed paper.
-    That is a real provenance distinction and it has to be stated in-repo."""
     assert HF_REFERENCE["transcribed_from"]
 
 
@@ -43,7 +38,6 @@ def test_energies_are_bound(symbol):
 
 
 def test_energies_decrease_with_z():
-    """A heavier atom is more tightly bound. Catches a transcription slip."""
     energies = [load_hf_reference(s)["total_energy_hartree"] for s in SYMBOLS]
     if any(e is None for e in energies):
         pytest.skip("reference energies not yet transcribed from the source")
@@ -52,14 +46,6 @@ def test_energies_decrease_with_z():
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 def test_energy_is_within_the_hydrogenic_bracket(symbol):
-    """Independent order-of-magnitude guard on each number, so a dropped or
-    duplicated digit cannot slip through while staying monotonic.
-
-    A neutral atom's HF energy is bracketed by two closed forms: the bare
-    hydrogenic sum -Z^2 * sum(1/n^2) over occupied shells (no electron
-    repulsion at all, so far too deep) and the total ionisation floor
-    -Z^2/2 (one electron in a 1s, so far too shallow).
-    """
     entry = load_hf_reference(symbol)
     energy = entry["total_energy_hartree"]
     if energy is None:

@@ -30,7 +30,7 @@ def test_agrees_with_perturbative_to_order_alpha4():
     r1 = residual(ALPHA)
     r2 = residual(ALPHA / 2)
     assert r1 < 1e-6
-    assert r2 == pytest.approx(r1 / 16.0, rel=0.1)  # alpha^4 scaling
+    assert r2 == pytest.approx(r1 / 16.0, rel=0.1)
 
 
 def test_exact_nj_degeneracy_is_l_independent():
@@ -56,9 +56,9 @@ def test_fidelity_exact_at_real_alpha_counterfactual_when_altered():
 
 def test_supercritical_is_rejected():
     with pytest.raises(ValueError):
-        dirac_energy(1, 0.5, Z=200)  # Z*alpha > j+1/2
+        dirac_energy(1, 0.5, Z=200)
 
 
 def test_invalid_j_rejected():
     with pytest.raises(ValueError):
-        dirac_energy(2, 2.5)  # j must be in {1/2, 3/2} for n=2
+        dirac_energy(2, 2.5)
