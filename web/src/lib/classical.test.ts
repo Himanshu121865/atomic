@@ -17,7 +17,7 @@ describe("classical trajectory law", () => {
   it("tau loops in [0,1) from wall time", () => {
     expect(tauFromWall(0, 5)).toBeCloseTo(0, 12);
     expect(tauFromWall(2.5, 5)).toBeCloseTo(0.5, 12);
-    expect(tauFromWall(7.5, 5)).toBeCloseTo(0.5, 12); // wrapped
+    expect(tauFromWall(7.5, 5)).toBeCloseTo(0.5, 12);
   });
   it("formats seconds into readable ps/fs", () => {
     expect(formatSeconds(1.556e-11)).toMatch(/ps/);

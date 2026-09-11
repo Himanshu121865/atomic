@@ -21,7 +21,6 @@
   --label: #b0814f;
   --warn: #ff5d8f;
 
-  /* legacy names still referenced by older rules/markup */
   --ink: var(--text);
   --dim: var(--muted);
 

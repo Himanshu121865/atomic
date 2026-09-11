@@ -16,8 +16,8 @@ import { ViewIntro } from "./ViewIntro";
 const W = 680;
 const H = 460;
 
-const HARTREE_UEV = 27.211386245988e6; // 1 hartree in µeV
-const MU_B_UEV_PER_T = (0.5 / 2.35051756758e5) * HARTREE_UEV; // µ_B in µeV per tesla
+const HARTREE_UEV = 27.211386245988e6;
+const MU_B_UEV_PER_T = (0.5 / 2.35051756758e5) * HARTREE_UEV;
 
 export function LevelsLadder({
   levels,
@@ -161,7 +161,7 @@ export function StarkFan({ gross, eField }: { gross: GrossLevel; eField: number 
   const subs = gross.sublevels ?? [];
   if (subs.length === 0 || eField <= 0) return null;
   const parentEv = gross.energy_ev.value;
-  const rels = subs.map((s) => (s.energy_ev.value - parentEv) * 1000); // meV
+  const rels = subs.map((s) => (s.energy_ev.value - parentEv) * 1000);
   const pad = Math.max(...rels.map(Math.abs), 1) * 0.3;
   const y = scaleLinear([Math.min(...rels) - pad, Math.max(...rels) + pad], [170, 30]);
   return (

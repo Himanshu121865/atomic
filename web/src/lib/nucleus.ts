@@ -12,8 +12,8 @@ export const MARKER_DIVISOR = 90;
 
 export interface NucleusSphere {
   kind: "true-scale" | "marker";
-  radius: number; // bohr (scene units)
-  magnification: number; // radius / physical r_rms (1 for true scale)
+  radius: number;
+  magnification: number;
 }
 
 export function nucleusSphere(

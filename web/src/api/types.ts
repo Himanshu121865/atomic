@@ -189,14 +189,12 @@ export interface CurveOfGrowthInfo {
   column_density_m2: number[];
   equivalent_width_nm: number[];
   regime: GrowthRegime[];
-  /** The local log-log slope: 1, then ~0, then 1/2. */
   slope: number[];
   tau_centre: number[];
   window_nm: number;
   provenance: Provenance;
 }
 
-/** One line's share of a blended absorption spectrum. */
 export interface AbsorbingLineInfo {
   wavelength_nm: number;
   label: string;
@@ -221,7 +219,6 @@ export interface AbsorptionInfo {
   blends: [string, string][];
   flux_closure: number;
   provenance: Provenance;
-  /** The column is a knob you turned, and it says so. */
   column_provenance: Provenance;
 }
 
@@ -243,7 +240,6 @@ export interface SpectrumResponse {
   reference_citation: string | null;
   tolerance_relative: number | null;
   intensity_note: string | null;
-  /** Sent exactly when the lines carry an emissivity. */
   thermal: ThermalInfo | null;
   profile: ProfileInfo | null;
   profile_note: string | null;

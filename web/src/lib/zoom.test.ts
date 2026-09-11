@@ -10,7 +10,7 @@ describe("zoomView", () => {
 
   it("keeps the value under the pointer under the pointer", () => {
     const view: [number, number] = [0, 10];
-    const anchor = 0.8; // the value 8
+    const anchor = 0.8;
     const [lo, hi] = zoomView(view, view, 0.25, anchor);
     expect(lo + anchor * (hi - lo)).toBeCloseTo(8, 10);
   });

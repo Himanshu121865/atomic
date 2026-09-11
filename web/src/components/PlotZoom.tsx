@@ -16,7 +16,6 @@ export type PlotZoom = {
   dragging: boolean;
   reset: () => void;
   by: (factor: number) => void;
-  /** Ref for the plot this zoom belongs to. */
   ref: (el: SVGSVGElement | null) => void;
   follower: (el: SVGSVGElement | null) => void;
   element: RefObject<SVGSVGElement | null>;

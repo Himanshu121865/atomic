@@ -38,7 +38,6 @@ const BOTTOM = 160;
 const AXIS_Y = 166;
 const DOT_Y = 163;
 
-/** What drives a bar's height. */
 export type BarQuantity = "rate" | "emissivity";
 
 const PICK: Record<BarQuantity, (ln: SpectralLineInfo) => number | undefined> = {
@@ -217,8 +216,6 @@ function ZoomPanel({
             </text>
           </g>
         ))}
-        {/* The axis names what the offsets are offsets from. Without this the
-            numbers are a scale with no origin. */}
         <text
           x={(M.left + W - M.right) / 2}
           y={ZOOM_H - 4}
@@ -229,8 +226,6 @@ function ZoomPanel({
         </text>
         {w && max > 0 && (
           <>
-            {/* The FWHM is drawn where it is defined: across the profile at
-                half its peak. A number in a caption is not the same thing. */}
             <line
               x1={x(w.wavelength_nm - half)} x2={x(w.wavelength_nm + half)}
               y1={y(max / 2)} y2={y(max / 2)} className="fwhm-bar"
@@ -480,8 +475,6 @@ export function SpectrumView() {
           onPointerLeave={hover.onPointerLeave}
         >
           <defs>
-            {/* The bars and the NIST dots are the data and get clipped to the
-                window. The axis under them is furniture and stays. */}
             <clipPath id="spectrum-clip">
               <rect x={M.left} y={0} width={W - M.right - M.left} height={AXIS_Y} />
             </clipPath>
@@ -496,11 +489,6 @@ export function SpectrumView() {
             x1={M.left} x2={W - M.right} y1={AXIS_Y} y2={AXIS_Y}
             className="axis"
           />
-          {/* Thinned, because the axis is logarithmic: d3's tick set puts 5000
-              and 6000 about four pixels apart, which printed the top two
-              decades as one run of digits ("5006007008009001000"). Ticks drop
-              by drawn position rather than by value, so the rule holds
-              whatever range the line list spans. */}
           {thinTicks(x.ticks(8), x, 34).map((t) => (
             <g key={t} transform={`translate(${x(t)},${AXIS_Y})`}>
               <line y2="5" className="axis" />
@@ -522,9 +510,6 @@ export function SpectrumView() {
               onClick={prof ? () => zoomLine(ln) : undefined}
             />
           ))}
-          {/* Over the bars, not under them: at this scale a line is far
-              narrower than a pixel, so the curve lands on exactly the same
-              columns as the bars and would otherwise hide behind them. */}
           {tracePath && <path d={tracePath} className="profile-curve" />}
           {comp?.map((c, i) => (
             <circle
@@ -557,10 +542,6 @@ export function SpectrumView() {
         <ZoomControls zoom={zoom} what="wavelength" />
       </figure>
 
-      {/* The view is called "vs NIST", so the answer to that comparison goes
-          in a sentence near the top rather than in a scatter plot at the
-          bottom. The residual plot stays: the count says whether it passed,
-          the plot says by how much and in which direction. */}
       {nist ? (
         <section className={`nist-panel${nist.allWithin ? " nist-ok" : " nist-off"}`}>
           <p className="nist-headline">
@@ -571,9 +552,6 @@ export function SpectrumView() {
           </p>
           {yRes && tol && (
             <>
-            {/* One wavelength axis, drawn twice: this panel follows the zoom
-                above rather than carrying a second window that could disagree
-                with it. Scrolling either one moves both. */}
             <svg
               viewBox={`0 0 ${W} ${RES_H}`}
               role="img"
@@ -590,8 +568,6 @@ export function SpectrumView() {
                   <rect x={M.left} y={0} width={W - M.right - M.left} height={RES_H} />
                 </clipPath>
               </defs>
-              {/* The residuals carry their own wavelength scale. Reading a dot
-                  off the plot above meant matching two panels by eye. */}
               {thinTicks(x.ticks(8), x, 34).map((t) => (
                 <g key={`rg-${t}`}>
                   <line
@@ -614,9 +590,6 @@ export function SpectrumView() {
                 y={yRes(tol)} height={yRes(-tol) - yRes(tol)} className="tol-band"
               />
               <line x1={M.left} x2={W - M.right} y1={yRes(0)} y2={yRes(0)} className="zero" />
-              {/* The residual axis, in a unit a reader can hold in their head.
-                  Every dot was a bare fraction before, on a scale with two
-                  labelled points: the band edges. */}
               {yRes.ticks(5).map((t) => (
                 <g key={`ry-${t}`} transform={`translate(${M.left},${yRes(t)})`}>
                   <line x2="-4" className="axis" />

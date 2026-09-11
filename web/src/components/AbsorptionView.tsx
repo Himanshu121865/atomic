@@ -41,9 +41,7 @@ export function absorptionAxisMode(loNm: number, hiNm: number): "log" | "offset"
   return (hiNm - loNm) / centre >= 0.05 ? "log" : "offset";
 }
 
-/** One column of the band under the axis. */
 export interface BandColumn {
-  /** The left edge, in viewBox units. */
   x: number;
   deepest: number;
   mean: number;
@@ -202,16 +200,11 @@ export function AbsorptionView({
             </text>
           </g>
         ))}
-        {/* The unabsorbed continuum, so every line's depth reads against the
-            thing it is a fraction of rather than against the axis. */}
         <line
           x1={M.left} x2={W - M.right} y1={y(1)} y2={y(1)} className="zero"
         />
         <path d={path} className="transmission-curve" />
 
-        {/* Where the gas absorbs, drawn as brightness. crispEdges, because
-            these tile: anti-aliased edges on abutting rectangles leave a seam
-            at every boundary, and a seam here reads as a line. */}
         {band.map((c, i) => (
           <rect
             key={i}

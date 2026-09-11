@@ -11,7 +11,6 @@ export function slowMotionFactor(collapseSeconds: number, wallSeconds = 5): numb
   return wallSeconds / collapseSeconds;
 }
 
-/** Loops tau in [0,1) from accumulated wall time. */
 export function tauFromWall(wallElapsed: number, wallSeconds = 5): number {
   return (wallElapsed % wallSeconds) / wallSeconds;
 }

@@ -21,17 +21,14 @@ function line(nm: number, a: number | null): SpectralLineInfo {
   };
 }
 
-/** A line carrying both a rate and an LTE emissivity. */
 function warm(nm: number, a: number, eps: number): SpectralLineInfo {
   return { ...line(nm, a), emissivity: q(eps, "eV/s per atom") };
 }
 
-/** n -> n' : the optical group. */
 function across(nm: number): SpectralLineInfo {
   return { ...line(nm, 1e8), n_upper: 3, n_lower: 2 };
 }
 
-/** Within one n: the fine-structure microwave group. */
 function within(nm: number): SpectralLineInfo {
   return { ...line(nm, 1e-12), n_upper: 2, n_lower: 2 };
 }

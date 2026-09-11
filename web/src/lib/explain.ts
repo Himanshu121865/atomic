@@ -1,10 +1,7 @@
 
 export interface ViewLead {
-  /** Plain-English name, not the axis label. */
   title: string;
-  /** A sentence or two. The question this view answers. */
   lead: string;
-  /** What is worth looking at first. Optional. */
   notice?: string;
 }
 
@@ -77,7 +74,6 @@ export function describeEField(mvPerM: number): string {
   return "strong enough to strip hydrogen's outer shells";
 }
 
-/** A temperature, anchored on things that emit light. */
 export function describeTemperature(kelvin: number): string {
   if (kelvin <= 400) return "around room temperature";
   if (kelvin <= 2000) return "a flame";
@@ -142,7 +138,6 @@ export interface ScenarioMultipliers {
 export interface Scenario {
   key: string;
   label: string;
-  /** What to watch for once it is applied. */
   blurb: string;
   multipliers: ScenarioMultipliers;
 }
