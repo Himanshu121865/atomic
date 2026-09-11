@@ -230,13 +230,6 @@ class ScreenedLevelsModel(BaseModel):
 
 
 class HFOrbitalModel(BaseModel):
-    """One converged Hartree-Fock subshell.
-
-    This mirrors ScreenedOrbitalModel field for field so a view can swap the two
-    models, and adds `channel`: the orbital amplitude P(r) is an array, so it
-    travels as raw float32 on /api/jobs/{id}/data like every other array here,
-    rather than inflating into JSON.
-    """
 
     n: int
     l: int
@@ -248,21 +241,6 @@ class HFOrbitalModel(BaseModel):
 
 
 class HFResultModel(BaseModel):
-    """One finished Hartree-Fock solve, as the browser sees it.
-
-    It carries z and n_electrons rather than a SystemModel. The screened models
-    are keyed to a named neutral preset, but Hartree-Fock needs no fitted table,
-    so it also solves ions that have no preset (K+ and Ar-like Fe both
-    converge), and inventing an Element for those to satisfy this schema would
-    be a fiction in the one place this codebase least wants one.
-
-    `iterations` and `virial_ratio` are convergence diagnostics. They describe
-    the solve, not the atom, and their provenance says NUMERICAL rather than
-    APPROXIMATION for exactly that reason; a view must not present the virial
-    ratio as a physical result.
-
-    The exchange and Pauli counterfactual fields arrive with Phase 11.
-    """
 
     kind: Literal["hf"] = "hf"
     z: int
@@ -328,13 +306,6 @@ class LineModel(BaseModel):
 
 
 class ThermalModel(BaseModel):
-    """The LTE conditions a spectrum was computed at, and what they produced.
-
-    They travel so a view can state what it is drawing. The ionized fraction in
-    particular is not decoration: once it approaches 1 the whole spectrum is dim
-    because there are no neutrals left, and a view that rescaled to the
-    brightest remaining line without saying so would hide that entirely.
-    """
 
     temperature_k: float
     electron_density_cm3: float
@@ -352,26 +323,18 @@ class ThermalModel(BaseModel):
 
 
 class LineWidthModel(BaseModel):
-    """The width budget for one line, so a view can say what set it.
-
-    It stays separate from the curve: someone pointing at a line wants to know
-    whether they are looking at temperature, lifetime, or the spectrograph, and
-    only the breakdown answers that.
-    """
 
     label: str
     wavelength_nm: float
     n_upper: int
     n_lower: int
     sigma_nm: float
-    #: Lorentzian HWHM, nm (natural).
     gamma_nm: float
     fwhm_nm: float
     terms: list[str]
 
 
 class ProfileModel(BaseModel):
-    """A synthesized spectrum: the curve, its widths, and what was left out."""
 
     wavelength_nm: list[float]
     intensity: list[float]
@@ -412,13 +375,6 @@ class ProfileModel(BaseModel):
 
 
 class CurveOfGrowthModel(BaseModel):
-    """How a line's measured strength responds when you add more gas.
-
-    The regime labels are the payload, not the curve. Which branch a line sits on
-    decides whether its strength measures the amount of gas at all, and a plot
-    without that answer would invite exactly the misreading this phase exists to
-    prevent.
-    """
 
     label: str
     wavelength_nm: float
@@ -456,7 +412,6 @@ class CurveOfGrowthModel(BaseModel):
 
 
 class AbsorbingLineModel(BaseModel):
-    """One line's share of a blended absorption spectrum."""
 
     wavelength_nm: float
     label: str
@@ -482,13 +437,6 @@ class AbsorbingLineModel(BaseModel):
 
 
 class AbsorptionSpectrumModel(BaseModel):
-    """A whole line list absorbing at once against a flat continuum.
-
-    `saturation` is the payload rather than the curve. It is how much of the
-    census the spectrum is losing, and without it a plot of transmission invites
-    the reading this phase exists to prevent: that a deeper line means
-    proportionally more gas.
-    """
 
     wavelength_nm: list[float]
     transmission: list[float]

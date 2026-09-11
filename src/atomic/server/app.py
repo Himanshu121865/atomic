@@ -169,11 +169,11 @@ class HyperfineShellModel(BaseModel):
     available: bool
     nucleus: str | None = None
     I: float | None = None
-    A: QuantityModel | None = None       # coupling constant, hartree
+    A: QuantityModel | None = None
     A_ev: QuantityModel | None = None
     levels: list[HyperfineLevelModel] = []
-    note: str | None = None              # e.g. spin-0: available but no split
-    reason: str | None = None            # why hyperfine is unavailable
+    note: str | None = None
+    reason: str | None = None
 
 
 class LevelsResponse(BaseModel):
@@ -280,15 +280,10 @@ class SampleJobResult:
 
 
 class HFRequest(BaseModel):
-    """A Hartree-Fock solve request.
-
-    The exchange and Pauli counterfactual flags arrive with Phase 11; the
-    solve here is always the real model.
-    """
 
     z: int
-    n_electrons: int | None = None  # defaults to neutral
-    config: str | None = None       # defaults to the aufbau ground configuration
+    n_electrons: int | None = None
+    config: str | None = None
 
 
 _HF_MAX_N = 3
@@ -296,13 +291,6 @@ _HF_MAX_Z = 36
 
 
 def _parse_config_or_422(text: str):
-    """Parse a hand-written configuration string, 422 on malformed input.
-
-    422 means the request could not be understood, since "2s^9" is not a
-    configuration. 400 means it was understood perfectly and is being
-    declined, which is what _validate_hf_request returns: a neutral potassium
-    atom is a real, well-posed request that cannot be answered honestly.
-    """
     try:
         cfg = parse_config(text)
         validate_config(cfg)
@@ -312,7 +300,6 @@ def _parse_config_or_422(text: str):
 
 
 def _validate_hf_request(z: int, n_electrons: int, config) -> None:
-    """Refuse what cannot be done, with the reason, before starting a job."""
     if not 1 <= z <= _HF_MAX_Z:
         raise HTTPException(
             status_code=400,
@@ -360,12 +347,6 @@ def _hf_channel(n: int, l: int) -> str:
 
 
 def _hf_symbol(z: int) -> str | None:
-    """The element symbol, or None above the preset table.
-
-    Hartree-Fock solves further up than the preset library reaches, and naming
-    the element is a convenience for the view rather than part of the physics,
-    so not having one is not an error.
-    """
     try:
         return element_by_z(z).symbol
     except KeyError:
@@ -501,7 +482,6 @@ def _to_pm(q: Quantity) -> Quantity:
 
 
 def _hyperfine_shell_model(rep) -> HyperfineShellModel:
-    """Map an available HyperfineReport to its response model, in eV as well."""
     return HyperfineShellModel(
         n=rep.n,
         available=True,
@@ -764,7 +744,7 @@ def create_app() -> FastAPI:
             reference = load_reference(system)
             comparison = citation = tol = None
             if reference is not None:
-                tol = 0.05  # the 5% pass bar, disclosed rather than hidden
+                tol = 0.05
                 comparison = [
                     ComparisonModel.from_comparison(c)
                     for c in compare_lines(
@@ -838,13 +818,6 @@ def create_app() -> FastAPI:
     def _resolve_thermal(
         temperature_k: float | None, electron_density_cm3: float | None
     ) -> ThermalConditions | None:
-        """Both knobs or neither: half of Saha is not a state anyone can read.
-
-        These bounds are display limits, not physics limits. Below ~100 K
-        every excited level is empty and the spectrum is a single dark band;
-        above ~10^6 K hydrogen is long gone. The formulas hold outside; the view
-        has nothing to show there.
-        """
         if temperature_k is None and electron_density_cm3 is None:
             return None
         if temperature_k is None or electron_density_cm3 is None:
@@ -868,7 +841,6 @@ def create_app() -> FastAPI:
     def _resolve_zoom(
         lambda_min: float | None, lambda_max: float | None
     ) -> tuple[float, float] | None:
-        """Both ends or neither, and the low end has to be real light."""
         if lambda_min is None and lambda_max is None:
             return None
         if lambda_min is None or lambda_max is None:
@@ -883,14 +855,6 @@ def create_app() -> FastAPI:
         return (lambda_min, lambda_max)
 
     def _profile_window(lines) -> tuple[float, float] | None:
-        """The wavelength span a synthesized curve should cover.
-
-        Same structural rule the view uses for its bar axis: across-n lines set
-        the range, because a fine-structure list also holds within-n components
-        out at millimetres to metres, and stretching a synthesis over eleven
-        decades of wavelength spends the whole point budget on empty space. None
-        means "no split applies, use the lot".
-        """
         across = [
             ln.wavelength.value for ln in lines if ln.n_upper != ln.n_lower
         ]
@@ -902,16 +866,6 @@ def create_app() -> FastAPI:
         lines, mass, hydrogenic: bool, resolving_power: float | None,
         full_range: bool, zoom: tuple[float, float] | None,
     ) -> tuple[ProfileModel | None, str | None]:
-        """Build the curve, or say plainly why there is none.
-
-        The failure mode here is a feature: with no decay rate, no temperature
-        and no instrument, every line has zero width, and the only way to
-        draw a curve would be to invent one. The note names the knob instead.
-
-        A `zoom` window is where this phase earns its keep: a profile only shows
-        its shape when the axis is narrow enough to resolve it, and the whole
-        point budget then lands on the one line being looked at.
-        """
         window = zoom if zoom else (None if full_range else _profile_window(lines.lines))
         try:
             syn = synthesize(
@@ -932,13 +886,6 @@ def create_app() -> FastAPI:
     def _lines_with_strengths(
         system: str, n_max: int, fine_structure: bool, thermal
     ):
-        """A line list carrying oscillator strengths and populations, plus the
-        emitter mass its Doppler widths need.
-
-        Both transfer endpoints want exactly this and want it identically:
-        a curve of growth and an absorption spectrum that disagreed about which
-        lines exist would be two answers about one gas.
-        """
         if is_atom_key(system):
             element = _screened_element(system)
             result = solve_screened_atom(
@@ -963,17 +910,6 @@ def create_app() -> FastAPI:
         resolving_power: float | None = None,
         lambda_min: float | None = None, lambda_max: float | None = None,
     ) -> AbsorptionSpectrumModel:
-        """A whole line list in front of a flat continuum, and what survives it.
-
-        One column density for the element comes in; each line's own
-        lower-level fraction turns it into that line's absorbers. That is what
-        makes the Lyman lines go black while the Balmer lines stay invisible in
-        the same gas, and it is the fact the emission endpoint cannot represent.
-
-        The window is left to the synthesis unless asked for, because sizing
-        it by eye is how a third of an equivalent width went missing in Phase 19
-        without anything reporting a problem.
-        """
         thermal = _resolve_thermal(temperature_k, electron_density_cm3)
         if not 0.0 <= column_density_m2 <= 1e30:
             raise HTTPException(
@@ -1001,13 +937,6 @@ def create_app() -> FastAPI:
         temperature_k: float = 10000.0, electron_density_cm3: float = 1e13,
         lambda_nm: float = 656.28, resolving_power: float | None = None,
     ) -> CurveOfGrowthModel:
-        """How much light one line removes, against how much gas is in the way.
-
-        The line is taken by wavelength rather than by quantum numbers so the
-        view can hand back whatever was clicked. The widths come from the same
-        Phase 18 synthesis that drew the profile, so this curve and the profile
-        beside it describe the same line.
-        """
         thermal = _resolve_thermal(temperature_k, electron_density_cm3)
         if lambda_nm <= 0.0:
             raise HTTPException(status_code=422, detail="lambda_nm must be > 0")
@@ -1243,14 +1172,6 @@ def create_app() -> FastAPI:
 
     @app.post("/api/jobs/hf", response_model=JobModel)
     async def create_hf_job(req: HFRequest) -> JobModel:
-        """Start a Hartree-Fock solve.
-
-        A job rather than a plain GET because the solve takes seconds, not
-        milliseconds (argon about 5s cold, chlorine about 7s), which is long
-        enough that a blocking request would be a bad answer even though it
-        would be a correct one. Results are memoized, so a repeat is free and
-        the job simply finishes immediately.
-        """
         n_electrons = req.z if req.n_electrons is None else req.n_electrons
         config = (
             aufbau_configuration(n_electrons)
