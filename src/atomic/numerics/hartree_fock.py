@@ -8,6 +8,7 @@ from scipy.sparse.linalg import LinearOperator, lobpcg
 
 from atomic.analytic.wigner import wigner_3j
 from atomic.numerics.hf_terms import (
+    ExchangeOperator,
     Subshell,
     direct_potential,
     exchange_apply,
@@ -31,6 +32,8 @@ __all__ = [
     "total_energy_direct",
     "total_energy_from_orbitals",
 ]
+
+_NO_EXCHANGE = ExchangeOperator(terms=())
 
 
 @dataclass(frozen=True)
@@ -81,8 +84,12 @@ def fock_operator(
     v_nuclear: Callable[[np.ndarray], np.ndarray],
     l: int,
     mesh: RadialMesh,
+    *,
+    exchange: bool = True,
 ) -> LinearOperator:
-    return _fock_parts(subshells, a_index, v_nuclear, l, mesh)[0]
+    return _fock_parts(
+        subshells, a_index, v_nuclear, l, mesh, exchange=exchange
+    )[0]
 
 
 def _fock_parts(
@@ -91,6 +98,8 @@ def _fock_parts(
     v_nuclear: Callable[[np.ndarray], np.ndarray],
     l: int,
     mesh: RadialMesh,
+    *,
+    exchange: bool = True,
 ) -> tuple[LinearOperator, np.ndarray, np.ndarray]:
     r = mesh.r
     v_local = np.asarray(v_nuclear(r), dtype=float) + direct_potential(
@@ -98,7 +107,9 @@ def _fock_parts(
     )
     diag, offdiag = mesh.hamiltonian_bands(v_local, l)
     scale = np.sqrt(mesh.step * mesh.jacobian)
-    exchange_op = exchange_operator(subshells, a_index, r)
+    exchange_op = (
+        exchange_operator(subshells, a_index, r) if exchange else _NO_EXCHANGE
+    )
 
     def matvec(s: np.ndarray) -> np.ndarray:
         s = np.asarray(s, dtype=float).ravel()
@@ -146,9 +157,13 @@ def solve_channel(
     tol: float = 1e-6,
     residual_ceiling: float = 1e-3,
     maxiter: int = 150,
+    *,
+    exchange: bool = True,
 ) -> ChannelSolution:
     r = mesh.r
-    op, diag, offdiag = _fock_parts(subshells, a_index, v_nuclear, l, mesh)
+    op, diag, offdiag = _fock_parts(
+        subshells, a_index, v_nuclear, l, mesh, exchange=exchange
+    )
     lowest = float(
         eigh_tridiagonal(
             diag, offdiag, select="i", select_range=(0, 0), eigvals_only=True
@@ -256,41 +271,50 @@ def orbital_energy(
     z: int,
     mesh: RadialMesh,
     v_nuclear: Callable[[np.ndarray], np.ndarray] | None = None,
+    *,
+    exchange: bool = True,
 ) -> float:
     r = mesh.r
     a = subshells[a_index]
     v_nuc = (-z / r) if v_nuclear is None else np.asarray(v_nuclear(r), dtype=float)
     one = local_expectation(a.p, v_nuc, a.l, mesh)
     direct = float(np.trapezoid(a.p**2 * direct_potential(subshells, a_index, r), r))
-    k_term = float(
-        np.trapezoid(a.p * exchange_apply(subshells, a_index, a.p, r), r)
+    k_term = (
+        float(np.trapezoid(a.p * exchange_apply(subshells, a_index, a.p, r), r))
+        if exchange
+        else 0.0
     )
     return one + direct - k_term
 
 
 def _interaction_energy(
-    subshells: tuple[Subshell, ...], r: np.ndarray
+    subshells: tuple[Subshell, ...], r: np.ndarray, *, exchange: bool = True
 ) -> float:
     total = 0.0
     for i, a in enumerate(subshells):
         total += (a.q * (a.q - 1) / 2.0) * slater_f(a.p, a.p, r, 0)
-        for k in range(2, 2 * a.l + 1, 2):
-            tj = wigner_3j(a.l, k, a.l, 0, 0, 0)
-            coeff = ((2 * a.l + 1) / (4 * a.l + 1)) * tj * tj
-            total -= (a.q * (a.q - 1) / 2.0) * coeff * slater_f(a.p, a.p, r, k)
+        if exchange:
+            for k in range(2, 2 * a.l + 1, 2):
+                tj = wigner_3j(a.l, k, a.l, 0, 0, 0)
+                coeff = ((2 * a.l + 1) / (4 * a.l + 1)) * tj * tj
+                total -= (a.q * (a.q - 1) / 2.0) * coeff * slater_f(a.p, a.p, r, k)
         for b in subshells[i + 1:]:
             total += a.q * b.q * slater_f(a.p, b.p, r, 0)
-            for k in range(abs(a.l - b.l), a.l + b.l + 1):
-                tj = wigner_3j(a.l, k, b.l, 0, 0, 0)
-                total -= 0.5 * a.q * b.q * tj * tj * slater_g(a.p, b.p, r, k)
+            if exchange:
+                for k in range(abs(a.l - b.l), a.l + b.l + 1):
+                    tj = wigner_3j(a.l, k, b.l, 0, 0, 0)
+                    total -= 0.5 * a.q * b.q * tj * tj * slater_g(a.p, b.p, r, k)
     return float(total)
 
 
 def total_energy_direct(
-    z: int, subshells: tuple[Subshell, ...], mesh: RadialMesh
+    z: int, subshells: tuple[Subshell, ...], mesh: RadialMesh,
+    *, exchange: bool = True,
 ) -> float:
     one = sum(a.q * one_electron_integral(a, z, mesh) for a in subshells)
-    return float(one + _interaction_energy(subshells, mesh.r))
+    return float(
+        one + _interaction_energy(subshells, mesh.r, exchange=exchange)
+    )
 
 
 def total_energy_from_orbitals(
@@ -309,7 +333,8 @@ def total_energy_from_orbitals(
 
 
 def kinetic_and_potential(
-    z: int, subshells: tuple[Subshell, ...], mesh: RadialMesh
+    z: int, subshells: tuple[Subshell, ...], mesh: RadialMesh,
+    *, exchange: bool = True,
 ) -> tuple[float, float]:
     zero = np.zeros_like(mesh.r)
     kinetic = 0.0
@@ -319,7 +344,7 @@ def kinetic_and_potential(
         kinetic += a.q * free
         nuclear += a.q * (one_electron_integral(a, z, mesh) - free)
     return float(kinetic), float(
-        nuclear + _interaction_energy(subshells, mesh.r)
+        nuclear + _interaction_energy(subshells, mesh.r, exchange=exchange)
     )
 
 
@@ -331,6 +356,8 @@ def scf(
     alpha: float = 0.65,
     max_iterations: int = 200,
     tol: float = 1e-8,
+    *,
+    exchange: bool = True,
 ) -> SCFSolution:
     if not 0.0 < alpha <= 1.0:
         raise ValueError(f"the mixing parameter must be in (0, 1], got {alpha}")
@@ -346,7 +373,7 @@ def scf(
             k = a.n - a.l - 1
             channel = solve_channel(
                 current, index, v_nuclear, a.l, mesh, n_states=k + 1,
-                guess=a.p[None, :],
+                guess=a.p[None, :], exchange=exchange,
             )
             mixed = (1.0 - alpha) * a.p + alpha * channel.orbitals[k]
             mixed = mesh.normalized(mixed)
