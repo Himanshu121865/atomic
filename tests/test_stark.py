@@ -1,4 +1,3 @@
-"""Validation for the parabolic Stark engine (linear + quadratic in a static field)."""
 
 import pytest
 
@@ -7,8 +6,7 @@ from atomic.analytic.stark import stark_sublevels
 from atomic.constants import E0_V_PER_M
 from atomic.provenance import Fidelity
 
-# field magnitude helpers
-_AU_PER_MVM = 1e6 / E0_V_PER_M  # a.u. of field per (MV/m)
+_AU_PER_MVM = 1e6 / E0_V_PER_M
 
 
 def _field_au(mvm: float) -> float:

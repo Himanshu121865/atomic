@@ -32,7 +32,6 @@ def test_gross_lyman_alpha_wavelength():
 def test_selection_rule_delta_l():
     ll = transition_lines(get_system("h"), n_max=4)
     assert all(abs(ln.l_upper - ln.l_lower) == 1 for ln in ll.lines)
-    # 2s -> 1s must be absent
     assert not any(
         (ln.n_upper, ln.l_upper, ln.n_lower) == (2, 0, 1) for ln in ll.lines
     )
@@ -50,10 +49,9 @@ def test_gross_lines_are_exact_and_sorted():
 def test_fine_structure_doublet():
     ll = transition_lines(get_system("h"), n_max=2, fine_structure=True)
     lya = [ln for ln in ll.lines if (ln.n_upper, ln.n_lower) == (2, 1)]
-    # 2p_{1/2} -> 1s_{1/2} and 2p_{3/2} -> 1s_{1/2}
     assert sorted(ln.j_upper for ln in lya) == [0.5, 1.5]
     dl = abs(lya[0].wavelength.value - lya[1].wavelength.value)
-    assert dl == pytest.approx(5.4e-4, rel=0.05)  # Lyman-alpha doublet ~0.54 pm
+    assert dl == pytest.approx(5.4e-4, rel=0.05)
     assert ll.provenance.fidelity is Fidelity.APPROXIMATION
 
 
@@ -65,16 +63,16 @@ def test_fine_structure_delta_j_rule():
 def test_deuterium_isotope_shift_direction():
     h = transition_lines(get_system("h"), n_max=2).lines[0]
     d = transition_lines(get_system("d"), n_max=2).lines[0]
-    assert d.wavelength.value < h.wavelength.value  # heavier nucleus -> bluer
+    assert d.wavelength.value < h.wavelength.value
     shift = h.wavelength.value - d.wavelength.value
-    assert shift == pytest.approx(0.033, rel=0.05)  # ~33 pm Lyman-alpha H/D shift
+    assert shift == pytest.approx(0.033, rel=0.05)
 
 
 def test_positronium_lyman_alpha_is_doubled():
     MU_H = 1836.152673426 / 1837.152673426
     ps = transition_lines(get_system("ps"), n_max=2).lines[0]
     assert ps.wavelength.value == pytest.approx(2.0 * 121.567 * MU_H, rel=1e-4)
-    assert ps.wavelength.value == pytest.approx(243.0, abs=0.1)  # literature Ps Lyman-alpha
+    assert ps.wavelength.value == pytest.approx(243.0, abs=0.1)
 
 
 def test_every_line_carries_provenance():
@@ -95,8 +93,8 @@ def test_vendored_h_reference_loads_with_citation():
     assert ref is not None
     assert ref.medium == "vacuum"
     assert "NIST" in ref.citation
-    assert len(ref.retrieved) == 10  # YYYY-MM-DD
-    assert len(ref.lines) >= 10  # Lyman+Balmer+Paschen up to n=6
+    assert len(ref.retrieved) == 10
+    assert len(ref.lines) >= 10
 
 
 def test_vendored_data_sanity_gate_against_computed_gross():
@@ -130,15 +128,14 @@ def test_fine_structure_improves_lyman_alpha():
     )
     d_gross = abs(compare_lines(gross, ref_only, 1.0)[0].delta_nm)
     d_fs = abs(compare_lines(fs, ref_only, 1.0)[0].delta_nm)
-    assert d_fs <= d_gross * 1.5  # fs must not be wildly worse; usually better
+    assert d_fs <= d_gross * 1.5
 
 
 def test_unknown_system_reference_is_none():
     assert load_reference("ps") is None
-    assert load_reference("he+") is None  # He II vendoring skipped in M2 (no ASD aggregates)
+    assert load_reference("he+") is None
 
 
-# --- Phase 6: screened-atom transitions ---
 
 def test_screened_lines_are_emission_and_dipole():
     from atomic.atoms import aufbau_configuration
@@ -147,10 +144,10 @@ def test_screened_lines_are_emission_and_dipole():
 
     res = solve_screened_atom(z=3, n_electrons=3, config=aufbau_configuration(3))
     lines = screened_transition_lines(res)
-    assert lines.lines  # non-empty
+    assert lines.lines
     for ln in lines.lines:
-        assert abs(ln.l_upper - ln.l_lower) == 1        # electric-dipole rule
-        assert ln.energy.value > 0                       # emission (E_upper > E_lower)
+        assert abs(ln.l_upper - ln.l_lower) == 1
+        assert ln.energy.value > 0
         assert ln.energy.provenance.fidelity is Fidelity.APPROXIMATION
 
 
@@ -164,8 +161,8 @@ def test_screened_he_reference_registered_and_compares():
     assert "NIST" in ref.citation
     res = solve_screened_atom(z=2, n_electrons=2, config=aufbau_configuration(2))
     comps = compare_lines(screened_transition_lines(res), ref, tolerance_relative=0.05)
-    assert comps  # at least one NIST line matched a computed line
-    assert all(c.within_tolerance for c in comps)  # GSZ He within the disclosed 5%
+    assert comps
+    assert all(c.within_tolerance for c in comps)
 
 
 def test_screened_na_has_line_near_589nm():
@@ -176,7 +173,7 @@ def test_screened_na_has_line_near_589nm():
     res = solve_screened_atom(z=11, n_electrons=11, config=aufbau_configuration(11))
     lines = screened_transition_lines(res)
     nearest = min(lines.lines, key=lambda ln: abs(ln.wavelength.value - 589.0))
-    assert abs(nearest.wavelength.value - 589.0) < 120.0  # GSZ valence class
+    assert abs(nearest.wavelength.value - 589.0) < 120.0
 
 
 def test_screened_alkali_references_registered():
@@ -195,9 +192,9 @@ def test_screened_na_d_line_compares_in_valence_class():
         screened_transition_lines(res), load_reference("na"),
         tolerance_relative=0.05, window_relative=0.25,
     )
-    assert comps  # the real transitions are associated, not silently dropped
+    assert comps
     d_line = min(comps, key=lambda c: abs(c.reference_nm - 588.995))
-    assert d_line.relative_error < 0.10  # within the GSZ valence class
+    assert d_line.relative_error < 0.10
 
 
 def test_compare_lines_window_defaults_preserve_hydrogen():

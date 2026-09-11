@@ -5,7 +5,6 @@ from atomic.numerics.slater import pair_potential, slater_f, slater_g
 
 
 def hydrogenic_1s(r: np.ndarray, z: float) -> np.ndarray:
-    """P_1s = r R_1s, normalized so that integral P^2 dr = 1."""
     return 2.0 * z**1.5 * r * np.exp(-z * r)
 
 
@@ -41,16 +40,12 @@ def test_f0_of_hydrogenic_1s_matches_the_analytic_value(grid):
 
 
 def test_direct_integral_is_symmetric_under_orbital_exchange(grid):
-    """F^k(ab) = F^k(ba): the direct integral cannot tell which electron is
-    which. Tests the quadrature, not a tautology."""
     a = hydrogenic_1s(grid, 1.0)
     b = hydrogenic_1s(grid, 2.5)
     assert slater_f(a, b, grid, 0) == pytest.approx(slater_f(b, a, grid, 0), rel=1e-8)
 
 
 def test_exchange_integral_never_exceeds_the_direct_one(grid):
-    """G^0(ab) <= F^0(ab) by Cauchy-Schwarz on a positive-definite kernel.
-    Holds for distinct orbitals, where the two integrals genuinely differ."""
     a = hydrogenic_1s(grid, 1.0)
     b = hydrogenic_1s(grid, 2.5)
     direct = slater_f(a, b, grid, 0)

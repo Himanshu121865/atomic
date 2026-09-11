@@ -305,7 +305,7 @@ def test_levels_endpoint_gross():
     assert [g["degeneracy"] for g in body["gross"]] == [2, 8, 18]
     e1 = body["gross"][0]["energy"]
     assert e1["unit"] == "hartree"
-    assert e1["value"] == pytest.approx(-0.4997278, rel=1e-5)  # reduced-mass H
+    assert e1["value"] == pytest.approx(-0.4997278, rel=1e-5)
     assert body["gross"][0]["energy_ev"]["unit"] == "eV"
 
 
@@ -319,7 +319,6 @@ def test_levels_endpoint_fine_structure():
     for f in fine:
         assert f["shift"]["provenance"]["fidelity"] == "approximation"
         assert f["shift_ev"]["unit"] == "eV"
-    # 2p_1/2 lies below 2p_3/2
     assert fine[2]["energy"]["value"] < fine[3]["energy"]["value"]
 
 
@@ -387,9 +386,8 @@ def test_levels_zeeman_splits_fine_levels():
     assert r.status_code == 200
     body = r.json()
     assert body["b_field"] == 2.0
-    # A 2p level (l=1) fans into its m_j sublevels.
     p = next(f for f in body["fine"] if f["n"] == 2 and f["l"] == 1 and f["j"] == 1.5)
-    assert p["sublevels"] is not None and len(p["sublevels"]) == 4  # m_j = +-3/2, +-1/2
+    assert p["sublevels"] is not None and len(p["sublevels"]) == 4
     s0 = p["sublevels"][0]
     assert s0["energy"]["provenance"]["fidelity"] == "approximation"
     assert "m_l" in s0["high_field_label"]
@@ -412,7 +410,7 @@ def test_levels_zeeman_ignored_for_screened():
     with TestClient(app) as client:
         r = client.get("/api/levels?system=he&fine_structure=true&b_field=5")
     assert r.status_code == 200
-    assert "orbitals" in r.json()  # ScreenedLevelsModel, no sublevels
+    assert "orbitals" in r.json()
 
 
 def test_levels_stark_splits_gross_levels():
@@ -422,7 +420,7 @@ def test_levels_stark_splits_gross_levels():
     body = r.json()
     assert body["e_field"] == 50.0
     g2 = next(g for g in body["gross"] if g["n"] == 2)
-    assert g2["sublevels"] is not None and len(g2["sublevels"]) == 4  # n^2
+    assert g2["sublevels"] is not None and len(g2["sublevels"]) == 4
     s0 = g2["sublevels"][0]
     assert s0["energy"]["provenance"]["fidelity"] == "approximation"
     assert "k" in s0 and "n1" in s0
@@ -453,7 +451,7 @@ def test_levels_stark_ignored_for_screened():
     with TestClient(app) as client:
         r = client.get("/api/levels?system=he&e_field=50")
     assert r.status_code == 200
-    assert "orbitals" in r.json()  # ScreenedLevelsModel, no sublevels
+    assert "orbitals" in r.json()
 
 
 def test_levels_hyperfine_splits_hydrogen_ground_state():
@@ -469,7 +467,6 @@ def test_levels_hyperfine_splits_hydrogen_ground_state():
     assert s1["nucleus"] == "proton" and s1["I"] == 0.5
     assert sorted(lv["F"] for lv in s1["levels"]) == [0.0, 1.0]
     assert s1["A"]["provenance"]["fidelity"] == "approximation"
-    # F=1 -> F=0 is the 21 cm line, ~5.87e-6 eV.
     split_ev = (max(lv["energy_ev"]["value"] for lv in s1["levels"])
                 - min(lv["energy_ev"]["value"] for lv in s1["levels"]))
     assert split_ev == pytest.approx(5.874e-6, rel=2e-2)

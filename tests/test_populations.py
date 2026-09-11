@@ -1,17 +1,3 @@
-"""Validation for LTE level populations and ionization.
-
-There is no closed-form ground truth to check this against the way the analytic
-hydrogen engine anchors the numerical solver, because Boltzmann and Saha *are*
-the model. What can be checked is that the model behaves the way statistical
-mechanics says it must: sums that have to be exactly one, limits at high and low
-temperature that have known values, and monotonic directions that cannot come
-out backwards without something being wrong.
-
-The one external anchor is deliberately coarse. Hydrogen at photospheric
-densities is about half ionized somewhere near 10^4 K, and that is asserted as
-an order of magnitude rather than a value, because the exact crossover moves
-with the electron density that is a free control here.
-"""
 
 import math
 
@@ -46,7 +32,6 @@ def test_fractions_sum_to_one_at_every_temperature(t):
 
 
 def test_a_two_level_system_matches_the_hand_computed_ratio():
-    """The one place the arithmetic is simple enough to check by hand."""
     t = 10000.0
     levels = two_level(gap_ev=1.0, g0=1, g1=3)
     f = boltzmann_fractions(levels, t)
@@ -61,8 +46,6 @@ def test_low_temperature_puts_everything_in_the_ground_level():
 
 
 def test_high_temperature_approaches_the_degeneracy_ratio():
-    """With kT far above every gap the exponentials all go to 1, so the
-    populations are pure statistical weight."""
     levels = hydrogen_levels(n_max=4)
     f = boltzmann_fractions(levels, 1e9)
     total_g = sum(x.degeneracy for x in levels)
@@ -108,9 +91,6 @@ def test_partition_function_is_the_ground_degeneracy_when_cold():
 
 
 def test_partition_function_discloses_its_truncation():
-    """The sum diverges. A number quoted without its cutoff would be a lie by
-    omission, so the cutoff rides in the assumptions.
-    """
     u = partition_function(hydrogen_levels(n_max=6), 10000.0)
     assert u.provenance.fidelity is Fidelity.APPROXIMATION
     assert any("truncat" in a.lower() for a in u.provenance.assumptions)
@@ -119,9 +99,6 @@ def test_partition_function_discloses_its_truncation():
 
 
 def test_truncation_matters_more_at_high_temperature():
-    """This is why the cutoff is disclosed rather than chosen quietly: at low T
-    the tail is irrelevant, at high T it dominates.
-    """
     def spread(t):
         small = partition_function(hydrogen_levels(n_max=3), t).value
         large = partition_function(hydrogen_levels(n_max=12), t).value
@@ -148,8 +125,6 @@ def test_ionization_rises_with_temperature():
 
 
 def test_ionization_falls_with_electron_density():
-    """More free electrons drive recombination, so a denser gas stays neutral
-    to a higher temperature."""
     xs = [
         saha_ionization_fraction(10000.0, ne, 13.6).value
         for ne in (1e10, 1e13, 1e16, 1e19)
@@ -158,12 +133,6 @@ def test_ionization_falls_with_electron_density():
 
 
 def test_hydrogen_is_about_half_ionized_near_ten_thousand_kelvin():
-    """The one external anchor, asserted as an order of magnitude.
-
-    At a photospheric electron density the crossover sits in the thousands of
-    kelvin, not the hundreds and not the hundreds of thousands. The exact value
-    moves with n_e, which is a free control here, so it is not pinned.
-    """
     def x(t):
         return saha_ionization_fraction(t, 1e13, 13.6).value
 
@@ -195,10 +164,6 @@ def test_the_half_ionization_temperature_rises_with_density():
 
 
 def test_saha_says_it_is_not_self_consistent():
-    """n_e is an independent knob here, not solved with the ionization it
-    drives. That is a real departure from an equilibrium gas and it has to be
-    on the record.
-    """
     x = saha_ionization_fraction(10000.0, 1e13, 13.6)
     assert x.provenance.fidelity is Fidelity.APPROXIMATION
     assert any("self-consist" in a.lower() for a in x.provenance.assumptions)
@@ -221,9 +186,6 @@ def test_emissivity_is_the_product_of_its_three_factors():
 
 
 def test_emissivity_vanishes_in_a_fully_ionized_gas():
-    """No neutrals left, no bound-bound emission. A zero here is physics, and
-    it is reported with the reason attached rather than as a bare 0.0.
-    """
     eps = line_emissivity(0.01, 0.0, 1e8, 10.2)
     assert eps.value == 0.0
     assert any("ioniz" in a.lower() for a in eps.provenance.assumptions)
@@ -238,8 +200,6 @@ def test_emissivity_carries_the_optically_thin_assumption():
 
 
 def test_boltzmann_constant_matches_scipy():
-    """K_EV above is hand-written for the by-hand ratio test; if it drifts from
-    CODATA that test silently checks the wrong thing."""
     from scipy import constants as sc
 
     assert K_EV == pytest.approx(

@@ -1,9 +1,3 @@
-"""Validation for optical depth and the curve of growth.
-
-The anchors are closed forms: the integrated cross-section is fixed by the
-oscillator strength alone, the thin-limit equivalent width has an analytic
-value, and the three branches of the curve of growth have known slopes.
-"""
 
 import math
 
@@ -25,9 +19,9 @@ from atomic.transfer import (
 )
 
 LAM = 656.28
-SIGMA = 0.0199      # nm, Doppler sigma
-GAMMA = 1.0e-5      # nm, natural HWHM
-F = 0.6407          # H-alpha oscillator strength
+SIGMA = 0.0199
+GAMMA = 1.0e-5
+F = 0.6407
 
 
 def _grid(span_fwhm=400.0, points=6001):
@@ -39,15 +33,11 @@ def _grid(span_fwhm=400.0, points=6001):
 
 
 def test_integrated_cross_section_constant():
-    """The classical electron oscillator, exact: 2.654e-6 m^2 Hz."""
     assert SIGMA_INTEGRAL == pytest.approx(2.654e-6, rel=1e-3)
     assert SIGMA_INTEGRAL * 1e4 == pytest.approx(0.02654, rel=1e-3)
 
 
 def test_cross_section_integral_depends_only_on_f():
-    """Broadening moves absorption around in wavelength; it does not create or
-    destroy any. The integral must come out at f lambda^2/c times the constant
-    for any width at all."""
     expected = SIGMA_INTEGRAL * F * (LAM * 1e-9) ** 2 / _sc.c
     for sig, gam in [(SIGMA, GAMMA), (SIGMA / 10, GAMMA), (0.0, 1e-3), (0.1, 1e-2)]:
         off, grid = _grid()
@@ -78,15 +68,13 @@ def test_transmission_bounds():
     assert t[0] == 1.0
     assert np.all(t >= 0.0)
     assert np.all(t <= 1.0)
-    assert t[-1] < 1e-100  # a truly black core
+    assert t[-1] < 1e-100
 
 
 def test_thin_limit_equivalent_width_matches_the_closed_form():
-    """The headline anchor: for tau << 1 the numeric W must reproduce
-    (pi e^2 / m_e c^2) N f lambda^2, which contains no width at all."""
     off, grid = _grid()
     s = cross_section(F, LAM, voigt(off, SIGMA, GAMMA))
-    n = 1e14  # low enough to stay thin
+    n = 1e14
     tau = optical_depth(s, n)
     assert tau.max() < 0.05
     w = equivalent_width(tau, grid)
@@ -94,8 +82,6 @@ def test_thin_limit_equivalent_width_matches_the_closed_form():
 
 
 def test_thin_limit_width_is_independent_of_broadening():
-    """Same column, same f, wildly different widths: identical equivalent
-    width. This is the fact that makes W worth measuring."""
     n = 1e14
     got = []
     for sig, gam in [(SIGMA, GAMMA), (SIGMA * 5, GAMMA), (SIGMA, GAMMA * 100)]:
@@ -107,9 +93,6 @@ def test_thin_limit_width_is_independent_of_broadening():
 
 
 def test_equivalent_width_survives_an_instrument():
-    """W is instrument-independent by construction, which is exactly why
-    spectroscopists use it. Convolving with a slit widens sigma; the area
-    removed from the continuum must not move."""
     n = 1e14
     off, grid = _grid()
     sharp = equivalent_width(
@@ -123,17 +106,11 @@ def test_equivalent_width_survives_an_instrument():
 
 
 def test_saturation_breaks_the_proportionality():
-    """A hundred times the gas must NOT give a hundred times the width once the
-    core is black. This is the whole reason the phase exists.
-
-    tau at line centre reaches 1 near N = 2e16 for this line, so 1e16 -> 1e18
-    straddles the knee: proportionality holds at the bottom and fails badly by
-    the top."""
     off, grid = _grid()
     s = cross_section(F, LAM, voigt(off, SIGMA, GAMMA))
     thin = equivalent_width(optical_depth(s, 1e16), grid).value
     thick = equivalent_width(optical_depth(s, 1e18), grid).value
-    assert thick / thin < 20.0  # far short of the naive 100
+    assert thick / thin < 20.0
 
 
 def test_saturated_core_goes_black():
@@ -162,11 +139,6 @@ def test_linear_branch_has_slope_one(cog):
 
 
 def test_saturated_branch_flattens(cog):
-    """The middle regime: the core is black, so growth is only through the
-    Doppler shoulders and W creeps as sqrt(ln N).
-
-    Bounded by the physics rather than by hand-picked columns: well past
-    tau_centre = 1 and well short of a * tau_centre = 1."""
     deep = cog.tau_centre > 30.0
     shallow = cog.damping_parameter * cog.tau_centre < 0.3
     flat = cog.slope[deep & shallow]
@@ -175,18 +147,12 @@ def test_saturated_branch_flattens(cog):
 
 
 def test_damping_branch_approaches_slope_one_half(cog):
-    """The Lorentzian wings never end, so growth resumes as sqrt(N gamma).
-
-    The asymptote is approached, not jumped to, so this asks for it well inside
-    the branch: a * tau_centre of 100 rather than the 1 that starts it."""
     damping = cog.slope[cog.damping_parameter * cog.tau_centre > 100.0]
     assert damping.size > 0
     assert np.allclose(damping, 0.5, atol=0.03)
 
 
 def test_the_window_widens_instead_of_bending_the_damping_slope(cog):
-    """A fixed window clips the wings at extreme columns and quietly drags the
-    slope below 0.5. The window must have grown past its default instead."""
     assert cog.equivalent_width.max() < 0.05 * 2 * cog.window_nm
     deep = cog.slope[cog.damping_parameter * cog.tau_centre > 1e3]
     assert deep.size > 0
@@ -198,9 +164,6 @@ def test_all_three_regimes_are_named(cog):
 
 
 def test_regime_is_decided_by_optical_depth_not_by_slope(cog):
-    """The trap this classifier exists to avoid: coming off the linear branch
-    the slope passes through 0.5, which looks exactly like the damping branch.
-    Every point there must still be called saturated or linear."""
     descending = (cog.slope > 0.4) & (cog.slope < 0.6) & (cog.tau_centre < 100)
     assert descending.any()
     for r, d in zip(cog.regime, descending, strict=True):
@@ -209,8 +172,6 @@ def test_regime_is_decided_by_optical_depth_not_by_slope(cog):
 
 
 def test_regimes_appear_in_order(cog):
-    """Linear, then saturated, then damping: a curve that reported them out of
-    order would be labelling noise rather than physics."""
     first = {r: list(cog.regime).index(r) for r in ("linear", "saturated", "damping")}
     assert first["linear"] < first["saturated"] < first["damping"]
 
@@ -222,8 +183,6 @@ def test_curve_matches_the_closed_form_where_it_should(cog):
 
 
 def test_wider_doppler_moves_the_knee_to_higher_columns():
-    """A broader line spreads the same absorption further, so it takes more gas
-    to blacken the core. The knee is what a real curve-of-growth fit measures."""
     def knee(sig):
         c = curve_of_growth(F, LAM, sig, GAMMA, np.geomspace(1e12, 1e20, 80))
         return c.column_density[np.argmax(c.slope < 0.7)]
@@ -272,12 +231,10 @@ def test_absorption_field_axes_line_up():
 
 
 def test_default_columns_contain_all_three_branches():
-    """A fixed range cannot serve every line: the knees move by orders of
-    magnitude with f and the widths. The range must be built from the line."""
     for f, lam, sig, gam in [
         (F, LAM, SIGMA, GAMMA),
-        (1e-4, 1875.0, 0.06, 3e-6),   # a weak infrared line
-        (0.42, 121.567, 0.0037, 2.5e-6),  # Lyman-alpha
+        (1e-4, 1875.0, 0.06, 3e-6),
+        (0.42, 121.567, 0.0037, 2.5e-6),
     ]:
         c = curve_of_growth(f, lam, sig, gam, default_columns(f, lam, sig, gam))
         assert set(c.regime) == {"linear", "saturated", "damping"}, (f, lam)

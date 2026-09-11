@@ -20,11 +20,6 @@ def test_trivial_symbol_is_one():
     ],
 )
 def test_closed_form_values(args, expected):
-    """Cross-checked against the closed form for m1=m2=m3=0:
-
-    3j = (-1)^g sqrt( (J-2j1)!(J-2j2)!(J-2j3)! / (J+1)! )
-         * g! / [ (g-j1)!(g-j2)!(g-j3)! ],  J = j1+j2+j3 even, g = J/2.
-    """
     assert wigner_3j(*args) == pytest.approx(expected, rel=1e-12)
 
 
@@ -58,14 +53,6 @@ def test_odd_permutation_sign():
 
 @pytest.mark.parametrize("m3", [-1, 0, 1, 2])
 def test_orthogonality_sum_rule(m3):
-    """For FIXED m3, summing over m1 (with m2 = -m3 - m1 determined):
-
-        sum_m1 (2 j3 + 1) |3j(j1 j2 j3; m1 m2 m3)|^2 = 1
-
-    m3 is an external label of the relation, not a free summation index.
-    Summing over m1 and m2 independently would add up 2*j3+1 separate
-    m3-slices and give 2*j3+1, not 1.
-    """
     j1, j2, j3 = 2, 1, 2
     total = 0.0
     for m1 in range(-j1, j1 + 1):

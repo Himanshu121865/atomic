@@ -1,10 +1,3 @@
-"""API contract for line intensities on /api/spectrum.
-
-The physics is validated in test_transitions.py and test_spectra_intensities.py.
-These check the boundary: that the flag is honoured, that provenance survives
-the trip, and that the two cases with no honest answer come back with their
-reason attached rather than as silent nulls.
-"""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -66,9 +59,6 @@ def test_fine_structure_serves_j_resolved_intensities(client):
 
 
 def test_screened_atom_serves_strengths_with_the_model_error_disclosed(client):
-    """Phase 16: the screened path has real strengths now, so there is no note
-    to serve. The GSZ model error rides along in each line's provenance.
-    """
     body = client.get("/api/spectrum?system=he&intensities=true").json()
     assert body["lines"] and all(ln["einstein_a_s"] is not None for ln in body["lines"])
     assert all(ln["einstein_a_s"]["value"] > 0.0 for ln in body["lines"])
@@ -94,7 +84,6 @@ def test_intensities_do_not_change_wavelengths_or_comparison(client):
 
 
 def test_reduced_mass_reaches_the_served_rate(client):
-    """Positronium's mu = 1/2 halves A relative to hydrogen (A ~ mu)."""
     h = _line(client.get("/api/spectrum?system=h&n_max=3&intensities=true").json(),
               2, 1, 1, 0)
     ps = _line(client.get("/api/spectrum?system=ps&n_max=3&intensities=true").json(),

@@ -1,15 +1,3 @@
-"""The Hartree-Fock server surface.
-
-The solve takes seconds, so it runs as a background job like sampling and
-plane grids, and reuses their endpoints rather than growing a parallel set:
-POST /api/jobs/hf starts it, /api/jobs/{id} reports status, /api/jobs/{id}/meta
-returns the energies with their provenance, and /api/jobs/{id}/data serves the
-orbital amplitudes as raw float32.
-
-Most of what is checked here is that provenance survives the trip. An energy
-that arrives in the browser without its fidelity tier is exactly the quiet lie
-this project exists to prevent, and the boundary is where it would be lost.
-"""
 
 import time
 
@@ -27,7 +15,6 @@ def client():
 
 
 def _run(client, **body):
-    """POST a solve, wait for it, return (job body, meta body)."""
     r = client.post("/api/jobs/hf", json=body)
     assert r.status_code == 200, r.text
     job_id = r.json()["id"]
@@ -62,12 +49,6 @@ def test_the_energy_carries_its_fidelity_to_the_browser(client):
 
 
 def test_the_diagnostics_are_labelled_numerical_not_approximation(client):
-    """The virial ratio is a property of the converged solve, not of helium.
-
-    If it arrived tagged APPROXIMATION a view would be entitled to draw it as
-    physics, so the tier is the thing keeping it honest and it is worth a test
-    of its own.
-    """
     _, meta = _run(client, z=2)
     for key in ("virial_ratio", "kinetic", "potential"):
         assert meta[key]["provenance"]["fidelity"] == "numerical", key
@@ -125,12 +106,6 @@ def test_an_unknown_channel_names_the_ones_that_exist(client):
 
 
 def test_a_neutral_alkali_beyond_argon_is_refused_with_the_reason(client):
-    """Potassium is a well-posed request this solver cannot answer honestly.
-
-    The refusal has to say which part is the problem, because the obvious
-    reading - that Z is too large - is wrong, and a user who believes it would
-    not try the ions that do work.
-    """
     r = client.post("/api/jobs/hf", json={"z": 19})
     assert r.status_code == 400
     detail = r.json()["detail"]
@@ -139,13 +114,8 @@ def test_a_neutral_alkali_beyond_argon_is_refused_with_the_reason(client):
 
 
 def test_an_argon_like_ion_above_argon_is_accepted(client):
-    """The other half of the claim the refusal makes.
-
-    If this failed, the refusal message would be describing a limit the server
-    does not actually have, which is its own kind of dishonesty.
-    """
     _, meta = _run(client, z=20, n_electrons=18)
-    assert meta["symbol"] is None  # past the preset table, and says so
+    assert meta["symbol"] is None
     assert meta["z"] == 20 and meta["n_electrons"] == 18
     assert meta["virial_ratio"]["value"] == pytest.approx(2.0, rel=1e-3)
 
@@ -163,7 +133,6 @@ def test_an_electron_count_that_contradicts_the_config_is_refused(client):
 
 
 def test_a_malformed_config_is_a_different_status_than_an_unsupported_one(client):
-    """422 means "not understood", 400 means "understood and declined"."""
     unreadable = client.post("/api/jobs/hf", json={"z": 10, "config": "1s2 2s9"})
     assert unreadable.status_code == 422
     declined = client.post("/api/jobs/hf", json={"z": 19})
@@ -184,8 +153,6 @@ def test_an_open_shell_discloses_the_configuration_average_and_neon_does_not(cli
 
 
 def test_the_neglected_relativity_is_quantified_for_a_heavy_atom(client):
-    """Helium's is 0.005% and argon's 0.44%, so a phrase that reads the same in
-    both would not be telling the reader anything."""
     _, argon = _run(client, z=18)
     joined = " ".join(argon["total_energy"]["provenance"]["assumptions"])
     assert "neglects relativity" in joined and "%" in joined
