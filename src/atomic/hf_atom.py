@@ -37,12 +37,16 @@ from atomic.provenance import Fidelity, Field, Provenance, Quantity
 __all__ = [
     "HFOrbital",
     "HFResult",
+    "PauliCollapse",
+    "collapsed_variational_energy",
     "evaluate_hf_state",
+    "hf_exchange_energy",
     "hf_mean_radius",
     "hf_mesh",
     "hf_radial",
     "hf_total_radial_density",
     "hf_valence_ionization_energy",
+    "pauli_collapse",
     "solve_hartree_fock",
 ]
 
@@ -89,6 +93,61 @@ _MESH_STEP = 0.01
 
 _MESH_FLOOR_RELATIVE = 4.0e-6
 
+_HARTREE_METHOD = (
+    "a self-consistent Hartree, average of configuration: the same solve with "
+    "the exchange term taken out of the Fock operator and out of the energy "
+    "functional"
+)
+_HARTREE_ALTERATION = (
+    "COUNTERFACTUAL: electrons are treated as distinguishable, so the "
+    "wavefunction is a product rather than an antisymmetrized determinant and "
+    "there is no exchange term at all"
+)
+_HARTREE_PAULI_INTACT = (
+    "the Pauli principle is NOT switched off: subshell occupancies are still "
+    "capped at 2(2l+1) and the configuration is left alone, so this is 'the "
+    "wavefunction is not antisymmetric', not 'the electrons may all fall into 1s'"
+)
+_HARTREE_SELF_INTERACTION = (
+    "an electron still does not repel itself: the (q-1) pair count is "
+    "electrostatics, true in either model, and is not part of what was removed"
+)
+_HARTREE_REFINEMENT = (
+    "turn exchange back on; this model is not an approximation to the real atom "
+    "that a better calculation would improve on"
+)
+
+_NO_PAULI_METHOD = (
+    "a self-consistent Hartree with the occupancy cap lifted: every electron "
+    "occupies the 1s, and there is neither exchange nor term structure"
+)
+_NO_PAULI_ALTERATION = (
+    "COUNTERFACTUAL: the Pauli exclusion principle is switched off, so the "
+    "2(2l+1) occupancy cap is gone and the ground configuration is 1s^N"
+)
+_NO_PAULI_IMPLIES_NO_EXCHANGE = (
+    "exchange is gone too, and that was not a separate choice: exchange energy "
+    "is a consequence of antisymmetry, and antisymmetry is what the exclusion "
+    "principle is"
+)
+_NO_PAULI_NO_TERMS = (
+    "term structure is undefined here, and nothing is being averaged over: L-S "
+    "terms are counted by enumerating distinct spin-orbital assignments, which "
+    "is the exclusion principle's own combinatorics, so 1s^N spans no terms "
+    "rather than many"
+)
+_NO_PAULI_REFINEMENT = (
+    "turn the exclusion principle back on; no calculation makes this the real "
+    "atom, because the real atom has shells and this one does not"
+)
+_NO_PAULI_WITH_EXCHANGE = (
+    "pauli=False with exchange=True is not a model: exchange energy is a "
+    "consequence of antisymmetry and the exclusion principle IS antisymmetry, "
+    "so nothing is left for an exchange integral to act on. Pass "
+    "exchange=False explicitly. It is not flipped automatically, because a "
+    "caller that asked for both was asking for something that does not exist."
+)
+
 
 @dataclass(frozen=True)
 class HFOrbital:
@@ -106,6 +165,8 @@ class HFResult:
     n_electrons: int
     config: Configuration
     is_ground: bool
+    exchange: bool
+    pauli: bool
     orbitals: tuple[HFOrbital, ...]
     total_energy: Quantity
     kinetic: Quantity
@@ -174,18 +235,34 @@ def _relativistic_scale(z: int) -> float:
     return abs(relativistic - schrodinger) / abs(schrodinger)
 
 
-def _energy_assumptions(config: Configuration, z: int) -> tuple[str, ...]:
+def _energy_assumptions(
+    config: Configuration, z: int, exchange: bool = True, pauli: bool = True
+) -> tuple[str, ...]:
     out = list(_TOTAL_ENERGY_ASSUMPTIONS)
+    if not pauli:
+        out[:0] = [
+            _NO_PAULI_ALTERATION,
+            _NO_PAULI_IMPLIES_NO_EXCHANGE,
+            _HARTREE_SELF_INTERACTION,
+            _NO_PAULI_NO_TERMS,
+        ]
+    elif not exchange:
+        out[:0] = [
+            _HARTREE_ALTERATION,
+            _HARTREE_PAULI_INTACT,
+            _HARTREE_SELF_INTERACTION,
+        ]
     if z >= _RELATIVITY_WORTH_STATING_Z:
         out.append(
             f"the model neglects relativity, which at Z = {z} shifts the hydrogenic 1s "
             f"by {100 * _relativistic_scale(z):.2f}% of its energy; that is the "
             f"scale of what is missing here, not a correction to apply"
         )
-    if open_subshells(config):
-        out.append(_OPEN_SHELL_ASSUMPTION)
-    if not is_single_term(config):
-        out.append(_MULTI_TERM_ASSUMPTION)
+    if pauli:
+        if open_subshells(config):
+            out.append(_OPEN_SHELL_ASSUMPTION)
+        if not is_single_term(config):
+            out.append(_MULTI_TERM_ASSUMPTION)
     return tuple(out)
 
 
@@ -195,18 +272,22 @@ def _solve_on_grid(
     config: Configuration,
     mesh: RadialMesh,
     start: tuple[Subshell, ...] | None,
+    exchange: bool = True,
 ) -> tuple[SCFSolution, tuple[float, ...], float]:
     if start is None:
         start = _guess_from_central_field(z, n_electrons, config, mesh)
 
     solution = scf(
         z, start, lambda rr: -z / rr, mesh, tol=1e-9 * max(1, z**2),
+        exchange=exchange,
     )
     energies = tuple(
-        orbital_energy(solution.subshells, i, z, mesh)
+        orbital_energy(solution.subshells, i, z, mesh, exchange=exchange)
         for i in range(len(solution.subshells))
     )
-    return solution, energies, total_energy_direct(z, solution.subshells, mesh)
+    return solution, energies, total_energy_direct(
+        z, solution.subshells, mesh, exchange=exchange
+    )
 
 
 @lru_cache(maxsize=8)
@@ -214,12 +295,16 @@ def solve_hartree_fock(
     z: int,
     n_electrons: int,
     config: Configuration,
+    exchange: bool = True,
+    pauli: bool = True,
 ) -> HFResult:
     if z < 1:
         raise ValueError(f"Z must be >= 1, got {z}")
     if not 1 <= n_electrons <= z + 1:
         raise ValueError(f"N must be in [1, Z+1], got {n_electrons} (Z={z})")
-    validate_config(config)
+    if not pauli and exchange:
+        raise ValueError(_NO_PAULI_WITH_EXCHANGE)
+    validate_config(config, pauli)
     if total_electrons(config) != n_electrons:
         raise ValueError(
             f"this configuration holds {total_electrons(config)} electrons, "
@@ -230,11 +315,12 @@ def solve_hartree_fock(
     coarse_mesh = hf_mesh(z, n_electrons, n_top, refinement=1)
     mesh = hf_mesh(z, n_electrons, n_top, refinement=2)
     coarse, coarse_energies, e_coarse = _solve_on_grid(
-        z, n_electrons, config, coarse_mesh, start=None
+        z, n_electrons, config, coarse_mesh, start=None, exchange=exchange
     )
     solution, energies, e_direct = _solve_on_grid(
         z, n_electrons, config, mesh,
         start=_refine(coarse, coarse_mesh, mesh),
+        exchange=exchange,
     )
 
     e_identity = total_energy_from_orbitals(solution.subshells, energies, z, mesh)
@@ -245,12 +331,22 @@ def solve_hartree_fock(
             f"that is a coding error, not a discretization one"
         )
 
-    kinetic, potential = kinetic_and_potential(z, solution.subshells, mesh)
+    kinetic, potential = kinetic_and_potential(
+        z, solution.subshells, mesh, exchange=exchange
+    )
 
-    assumptions = _energy_assumptions(config, z)
-    method, refinement = _TOTAL_ENERGY_METHOD, _TOTAL_ENERGY_REFINEMENT
+    assumptions = _energy_assumptions(config, z, exchange, pauli)
+    if not pauli:
+        method, refinement = _NO_PAULI_METHOD, _NO_PAULI_REFINEMENT
+    elif not exchange:
+        method, refinement = _HARTREE_METHOD, _HARTREE_REFINEMENT
+    else:
+        method, refinement = _TOTAL_ENERGY_METHOD, _TOTAL_ENERGY_REFINEMENT
+    fidelity = (
+        Fidelity.APPROXIMATION if (exchange and pauli) else Fidelity.COUNTERFACTUAL
+    )
     energy_prov = Provenance(
-        fidelity=Fidelity.APPROXIMATION,
+        fidelity=fidelity,
         method=method,
         assumptions=assumptions,
         error_estimate=(
@@ -268,7 +364,7 @@ def solve_hartree_fock(
         ),
     )
     shape_prov = Provenance(
-        fidelity=Fidelity.APPROXIMATION,
+        fidelity=fidelity,
         method=f"{method}; the radial amplitude sampled on the solver mesh",
         assumptions=assumptions,
         refinement=refinement,
@@ -297,11 +393,14 @@ def solve_hartree_fock(
     )
 
     return HFResult(
-        key=f"z{z}n{n_electrons}",
+        key=f"z{z}n{n_electrons}" + ("" if pauli else "-nopauli")
+        + ("" if exchange or not pauli else "-nox"),
         z=z,
         n_electrons=n_electrons,
         config=config,
-        is_ground=is_ground(config),
+        is_ground=is_ground(config, pauli),
+        exchange=exchange,
+        pauli=pauli,
         orbitals=orbitals,
         total_energy=Quantity(e_direct, "hartree", "E_total", energy_prov),
         kinetic=Quantity(kinetic, "hartree", "T", diagnostic_prov),
@@ -340,6 +439,40 @@ def hf_valence_ionization_energy(result: HFResult) -> Quantity:
     return Quantity(-valence.energy.value, "hartree", "IE_valence", prov)
 
 
+def hf_exchange_energy(z: int, n_electrons: int, config: Configuration) -> Quantity:
+    with_exchange = solve_hartree_fock(z, n_electrons, config, True)
+    without = solve_hartree_fock(z, n_electrons, config, False)
+    delta = with_exchange.total_energy.value - without.total_energy.value
+
+    return Quantity(
+        delta,
+        "hartree",
+        "E_exchange",
+        Provenance(
+            fidelity=Fidelity.COUNTERFACTUAL,
+            method=(
+                "E(Hartree-Fock) - E(Hartree): the same atom on the same mesh, "
+                "solved once with the exchange term and once without"
+            ),
+            assumptions=(
+                "this is the stabilization an antisymmetric wavefunction buys, at "
+                "the average-of-configuration level, and it is not an observable",
+                "exactly zero whenever no two electrons share a spin, which "
+                "includes helium and every closed single-s-shell configuration",
+            )
+            + _TOTAL_ENERGY_ASSUMPTIONS,
+            error_estimate=max(
+                with_exchange.total_energy.provenance.error_estimate or 0.0,
+                without.total_energy.provenance.error_estimate or 0.0,
+            ),
+            refinement=(
+                "correlation energy is the other half of what a single "
+                "determinant misses, and it is left out of this difference"
+            ),
+        ),
+    )
+
+
 def hf_mean_radius(result: HFResult) -> Quantity:
     n_top = max(n for (n, _), _ in result.config)
     mesh = hf_mesh(result.z, result.n_electrons, n_top, refinement=2)
@@ -364,6 +497,116 @@ def hf_mean_radius(result: HFResult) -> Quantity:
     )
 
 
+def collapsed_variational_energy(
+    z: int, n_electrons: int
+) -> tuple[Quantity, Quantity]:
+    if z < 1:
+        raise ValueError(f"Z must be >= 1, got {z}")
+    if n_electrons < 1:
+        raise ValueError(f"N must be >= 1, got {n_electrons}")
+    n = n_electrons
+    zeta = z - (5.0 / 16.0) * (n - 1)
+    energy = n * (zeta**2 / 2 - z * zeta) + (n * (n - 1) / 2) * (5 * zeta / 8)
+    prov = Provenance(
+        fidelity=Fidelity.COUNTERFACTUAL,
+        method=(
+            "the closed-form variational minimum for N electrons in one "
+            "hydrogenic 1s of exponent zeta, with direct repulsion and no exchange"
+        ),
+        assumptions=(
+            _NO_PAULI_ALTERATION,
+            _NO_PAULI_IMPLIES_NO_EXCHANGE,
+            "the orbital is constrained to an exponential, so this is an upper "
+            "bound on the collapsed atom's energy and the SCF must come in at or "
+            "below it",
+        ),
+        refinement=_NO_PAULI_REFINEMENT,
+    )
+    return (
+        Quantity(zeta, "dimensionless", "zeta*", prov),
+        Quantity(energy, "hartree", "E(zeta*)", prov),
+    )
+
+
+@dataclass(frozen=True)
+class PauliCollapse:
+
+    z: int
+    n_electrons: int
+    real: HFResult
+    collapsed: HFResult
+    binding_change: Quantity
+    real_radius: Quantity
+    collapsed_radius: Quantity
+    radius_ratio: Quantity
+    variational_zeta: Quantity
+    variational_energy: Quantity
+
+
+def pauli_collapse(z: int, n_electrons: int | None = None) -> PauliCollapse:
+    if n_electrons is None:
+        n_electrons = z
+    real = solve_hartree_fock(z, n_electrons, aufbau_configuration(n_electrons))
+    collapsed = solve_hartree_fock(
+        z,
+        n_electrons,
+        aufbau_configuration(n_electrons, pauli=False),
+        exchange=False,
+        pauli=False,
+    )
+    real_radius = hf_mean_radius(real)
+    collapsed_radius = hf_mean_radius(collapsed)
+    zeta, e_var = collapsed_variational_energy(z, n_electrons)
+
+    compare_prov = Provenance(
+        fidelity=Fidelity.COUNTERFACTUAL,
+        method=(
+            "the same atom solved twice on the same mesh, once under the "
+            "exclusion principle and once with the occupancy cap lifted"
+        ),
+        assumptions=(
+            _NO_PAULI_ALTERATION,
+            _NO_PAULI_IMPLIES_NO_EXCHANGE,
+            "this is a difference between one real model and one impossible "
+            "one, so it is not an observable and has no measured value to be "
+            "checked against",
+        )
+        + _TOTAL_ENERGY_ASSUMPTIONS,
+        error_estimate=(
+            (real.total_energy.provenance.error_estimate or 0.0)
+            + (collapsed.total_energy.provenance.error_estimate or 0.0)
+        ),
+        refinement=_NO_PAULI_REFINEMENT,
+    )
+    ratio_prov = dataclasses.replace(
+        compare_prov,
+        method=f"{compare_prov.method}; the ratio of the two <r> values",
+        error_estimate=None,
+    )
+    return PauliCollapse(
+        z=z,
+        n_electrons=n_electrons,
+        real=real,
+        collapsed=collapsed,
+        binding_change=Quantity(
+            collapsed.total_energy.value - real.total_energy.value,
+            "hartree",
+            "E(no Pauli) - E(atom)",
+            compare_prov,
+        ),
+        real_radius=real_radius,
+        collapsed_radius=collapsed_radius,
+        radius_ratio=Quantity(
+            collapsed_radius.value / real_radius.value,
+            "dimensionless",
+            "<r>(no Pauli) / <r>(atom)",
+            ratio_prov,
+        ),
+        variational_zeta=zeta,
+        variational_energy=e_var,
+    )
+
+
 _TOTAL_DENSITY_IS_OBSERVABLE = (
     "this one IS an observable: the total electron density, summed over every "
     "occupied subshell, is what an X-ray diffraction experiment measures. Its "
@@ -377,10 +620,12 @@ def hf_total_radial_density(
     n_electrons: int,
     *,
     config: Configuration | None = None,
+    exchange: bool = True,
+    pauli: bool = True,
     points: int = 400,
 ) -> Field:
-    cfg = aufbau_configuration(n_electrons) if config is None else config
-    result = solve_hartree_fock(z, n_electrons, cfg)
+    cfg = aufbau_configuration(n_electrons, pauli) if config is None else config
+    result = solve_hartree_fock(z, n_electrons, cfg, exchange, pauli)
 
     solver_r = result.orbitals[0].P.grid
     grid = np.geomspace(solver_r[0], solver_r[-1], points)
@@ -420,19 +665,27 @@ def _occupied_orbital(
     n: int,
     l: int,
     config: Configuration | None = None,
+    exchange: bool = True,
+    pauli: bool = True,
 ) -> HFOrbital:
     if n <= l:
         raise ValueError(f"n must be > l, got n={n}, l={l}")
-    cfg = aufbau_configuration(n_electrons) if config is None else config
-    result = solve_hartree_fock(z, n_electrons, cfg)
+    cfg = aufbau_configuration(n_electrons, pauli) if config is None else config
+    result = solve_hartree_fock(z, n_electrons, cfg, exchange, pauli)
     for orbital in result.orbitals:
         if (orbital.n, orbital.l) == (n, l):
             return orbital
     held = ", ".join(f"{o.n}{'spdf'[o.l]}" for o in result.orbitals)
+    why = (
+        "the occupancy cap is lifted, so every electron is in the 1s and no "
+        "other orbital exists to be an eigenfunction of anything"
+        if not pauli
+        else "one Fock operator is built per occupied subshell, so there is no "
+        "operator for an empty one"
+    )
     raise ValueError(
         f"subshell {n}{'spdf'[l]} is not occupied in Z={z}, N={n_electrons} "
-        f"(which holds {held}); one Fock operator is built per occupied "
-        "subshell, so there is no operator for an empty one"
+        f"(which holds {held}); {why}"
     )
 
 
@@ -444,8 +697,12 @@ def hf_radial(
     points: int = 400,
     *,
     config: Configuration | None = None,
+    exchange: bool = True,
+    pauli: bool = True,
 ) -> tuple[Field, Field]:
-    orbital = _occupied_orbital(z, n_electrons, n, l, config=config)
+    orbital = _occupied_orbital(
+        z, n_electrons, n, l, config=config, exchange=exchange, pauli=pauli
+    )
     solver_r = orbital.P.grid
     r_out = display_window(solver_r, orbital.P.values**2)
     grid = np.linspace(solver_r[0], r_out, points)
@@ -480,6 +737,8 @@ def evaluate_hf_state(
     *,
     basis: str = "complex",
     config: Configuration | None = None,
+    exchange: bool = True,
+    pauli: bool = True,
 ) -> WavefunctionValues:
     pos = np.asarray(positions, dtype=float)
     if pos.ndim != 2 or pos.shape[1] != 3:
@@ -492,7 +751,8 @@ def evaluate_hf_state(
     phi = np.arctan2(pos[:, 1], pos[:, 0])
 
     r_field, _ = hf_radial(
-        z, n_electrons, n, l, points=_HF_EVAL_POINTS, config=config,
+        z, n_electrons, n, l, points=_HF_EVAL_POINTS,
+        config=config, exchange=exchange, pauli=pauli,
     )
     R = np.interp(r, r_field.grid, r_field.values, left=r_field.values[0], right=0.0)
     angular = spherical_harmonic(l, m, theta, phi, basis=basis)
