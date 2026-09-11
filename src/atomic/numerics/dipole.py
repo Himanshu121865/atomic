@@ -1,22 +1,3 @@
-"""Dipole matrix elements over numerically solved radial functions.
-
-The analytic engine (`analytic/transitions.py`) integrates closed-form
-hydrogenic R_nl. This module does the same job for **any central potential** by
-reusing the radial solver, which is what lets screened atoms, and later
-counterfactual force laws, carry line strengths.
-
-The solver returns `u = r R(r)` normalized so `integral u^2 dr = 1`, so the
-dipole integral is a plain overlap with no division by r and no reconstruction
-of R:
-
-    R_dipole = integral R_b(r) r R_a(r) r^2 dr = integral u_a(r) u_b(r) r dr
-
-**Both states have to be solved on one grid.** Calling the solver twice with
-per-state box sizes gives two different radial meshes back, and multiplying
-those sample-by-sample is meaningless. So everywhere here both l channels are
-solved at the same `r_max` and `n_points`. See
-docs/specs/2026-07-25-phase16-screened-line-strengths-design.md.
-"""
 
 from collections.abc import Callable
 
@@ -36,39 +17,16 @@ _H_TARGET = 0.01
 
 
 def dipole_box_radius(n_top: int, z_net: float = 1.0) -> float:
-    """A box sized to hold the more extended of the two states comfortably.
-
-    This mirrors `screened_atom._r_max`: orbital extent goes as n^2 / Z_net.
-
-    The coefficient is 10, not the 40 it started at, because the box now sets
-    the cost: `grid_points_for` holds h fixed, so points scale with r_max. At 10
-    the hydrogenic <6p|r|5s> and <4p|r|1s> integrals, and the screened Na 3s->3p,
-    agree with the 40 box to six significant digits; the value only starts to
-    move at a coefficient of 2.5, which leaves a 4x margin in box size at a
-    quarter of the cost.
-    """
     return 10.0 * (n_top + 1) ** 2 / z_net
 
 
 def grid_points_for(r_max: float, h_target: float = _H_TARGET) -> int:
-    """The point count needed to keep the spacing at or below `h_target`.
-
-    Sizing the grid by point count alone is a trap: a generous box with a fixed
-    N silently coarsens h. Before this existed, a 640-bohr box at N = 8000 gave
-    h = 0.08 and a 6.7% error on the Na 3s->3p element, with nothing in the
-    returned number to say so.
-    """
     return int(np.ceil(r_max / h_target))
 
 
 def dipole_from_solutions(
     sol_a: RadialSolution, k_a: int, sol_b: RadialSolution, k_b: int
 ) -> float:
-    """integral u_a u_b r dr for two states already solved on one grid.
-
-    This is separate so a caller with many lines can solve each l channel
-    once and reuse it, rather than re-running the eigenproblem per line.
-    """
     if sol_a.r.shape != sol_b.r.shape or not np.array_equal(sol_a.r, sol_b.r):
         raise ValueError(
             "the two states must be solved on one grid; got "
@@ -83,7 +41,6 @@ def _overlap(
     l_a: int, k_a: int, l_b: int, k_b: int,
     r_max: float, n_points: int, mu_ratio: float,
 ) -> float:
-    """integral u_a u_b r dr, solving both states on one grid."""
     same_l = l_b == l_a
     states_a = max(k_a, k_b) + 1 if same_l else k_a + 1
     sol_a = solve_radial(
@@ -105,18 +62,6 @@ def dipole_matrix_element(
     n_points: int | None = None,
     mu_ratio: float = 1.0,
 ) -> Quantity:
-    """The radial dipole matrix element <b|r|a> in bohr, for a central
-    potential.
-
-    States are named by (l, k) with k the radial node count, so k = n - l - 1
-    for a hydrogen-like labelling. `n_top` sizes the box: pass the larger n of
-    the pair. The error estimate comes from grid-halving, the same convention
-    the radial solver uses.
-
-    The sign is the solver's: `solve_radial` fixes each u to start positive, so
-    the element is reproducible but its overall sign carries no physics. Only
-    |R|^2 enters a rate.
-    """
     if k_a < 0 or k_b < 0:
         raise ValueError(f"node indices must be >= 0, got k_a={k_a}, k_b={k_b}")
     if l_a < 0 or l_b < 0:

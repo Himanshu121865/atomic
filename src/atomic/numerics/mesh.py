@@ -95,11 +95,6 @@ class RadialMesh:
         return out
 
     def to_s(self, p: np.ndarray) -> np.ndarray:
-        """P -> S = sqrt(delta J) P, the variable the eigenproblem is solved in.
-
-        Accepts a stack of orbitals shaped (k, N) with the mesh on the last
-        axis; the LOBPCG block in the channel solve travels through here.
-        """
         arr = np.asarray(p, dtype=float)
         if arr.shape[-1] != self.r.size or (arr.ndim != 1 and arr.ndim != 2):
             raise ValueError(
@@ -109,7 +104,6 @@ class RadialMesh:
         return arr * np.sqrt(self.step * self.jacobian)
 
     def to_p(self, s: np.ndarray) -> np.ndarray:
-        """S -> P, the physical radial function r R(r). Stacks accepted as in to_s."""
         arr = np.asarray(s, dtype=float)
         if arr.shape[-1] != self.r.size or (arr.ndim != 1 and arr.ndim != 2):
             raise ValueError(
@@ -119,7 +113,6 @@ class RadialMesh:
         return arr / np.sqrt(self.step * self.jacobian)
 
     def normalized(self, p: np.ndarray) -> np.ndarray:
-        """P, scaled so that integral P^2 dr = 1 in this mesh's own quadrature."""
         arr = np.asarray(p, dtype=float)
         if arr.ndim != 1:
             raise ValueError(
