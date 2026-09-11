@@ -1,20 +1,3 @@
-"""How an emission rate becomes a line intensity: Boltzmann, Saha, emissivity.
-
-This is the layer where the subject stops being one atom and starts being a
-gas. An Einstein A says how fast an atom in the upper level decays; it says
-nothing about how many atoms are up there, which is what decides whether the
-line is visible at all. Boltzmann answers that for a gas at one temperature,
-and Saha answers the prior question of whether any neutral atom is left to do
-the emitting.
-
-Everything here is APPROXIMATION and the assumptions are the error bar. Local
-thermodynamic equilibrium is a strong claim: real nebulae are not in LTE, and
-neither is a discharge lamp. The arithmetic given the model is exact, so no
-error_estimate is invented for it: a tight number on a model this schematic
-would be worse than none.
-
-See docs/specs/2026-07-26-phase17-population-modelling-design.md.
-"""
 
 import math
 from dataclasses import dataclass
@@ -57,12 +40,6 @@ _LTE = (
 
 @dataclass(frozen=True)
 class Level:
-    """A level atoms can sit in.
-
-    `energy_ev` is measured up from the ground level, so it is >= 0 and the
-    Boltzmann factor never overflows. `n` is carried only so the partition
-    function's truncation can be named in the provenance.
-    """
 
     n: int
     label: str
@@ -72,7 +49,6 @@ class Level:
 
 @dataclass(frozen=True)
 class ThermalConditions:
-    """The two knobs, kept together so half a pair cannot be passed in."""
 
     temperature_k: float
     electron_density_cm3: float
@@ -80,12 +56,6 @@ class ThermalConditions:
 
 @dataclass(frozen=True)
 class ThermalState:
-    """What the conditions produced, carried alongside a line list.
-
-    The view needs all of this to be honest about what it draws: how much of the
-    gas is even neutral, and what the partition function came to with its cutoff
-    attached.
-    """
 
     conditions: ThermalConditions
     ionized_fraction: Quantity
@@ -93,27 +63,10 @@ class ThermalState:
 
 
 def level_degeneracy(l: int, j: float | None) -> int:
-    """Statistical weight of a level: 2j+1 when j is resolved, else 2(2l+1).
-
-    One definition, shared between the hydrogen constructor here and whatever
-    builds levels from a system's own energies, so the two schemes cannot drift
-    apart. Both sum to 2n^2 per shell.
-    """
     return int(round(2.0 * j + 1.0)) if j is not None else 2 * (2 * l + 1)
 
 
 def hydrogen_levels(n_max: int, fine_structure: bool = False) -> tuple[Level, ...]:
-    """The hydrogen levels up to `n_max`, with their statistical weights.
-
-    The weight is 2(2l+1) for a gross (n, l) sublevel and 2j+1 for a
-    fine-structure (n, l, j) one. Both sum to 2n^2 per shell, which is the
-    arithmetic check the tests assert.
-
-    The energies are Bohr energies relative to the ground state. Fine structure
-    shifts them by O(alpha^2), far below kT at any temperature where the
-    populations differ from 0 or 1, so both schemes use the same energies; what
-    fine structure changes here is how the weight is split.
-    """
     if n_max < 1:
         raise ValueError(f"n_max must be >= 1, got {n_max}")
     ionization_ev = _sc.physical_constants["Rydberg constant times hc in eV"][0]
@@ -150,17 +103,6 @@ def _truncation_note(levels: tuple[Level, ...]) -> tuple[str, ...]:
 
 
 def partition_function(levels: tuple[Level, ...], temperature_k: float) -> Quantity:
-    """U(T) = sum g_i exp(-E_i / kT), cut off at the level list's own n_max.
-
-    The exact sum does not converge. Its terms tend to g_n exp(-chi/kT), which
-    grows as 2n^2, so the answer depends on where the sum stops, and the cutoff
-    is part of the number rather than an implementation detail.
-
-    The physical resolution is that a plasma at finite density has no n = 100
-    states to occupy: neighbouring ions blur them into the continuum. n_max is a
-    crude stand-in for that cutoff, and the refinement says what would replace
-    it.
-    """
     _check_temperature(temperature_k)
     kt = K_EV * temperature_k
     value = sum(x.degeneracy * math.exp(-x.energy_ev / kt) for x in levels)
@@ -184,12 +126,6 @@ def partition_function(levels: tuple[Level, ...], temperature_k: float) -> Quant
 def boltzmann_fractions(
     levels: tuple[Level, ...], temperature_k: float
 ) -> tuple[Quantity, ...]:
-    """The share of the *neutral* population in each level, one per level.
-
-    These sum to exactly 1 by construction: they are shares of the neutrals, not
-    of the whole gas. What fraction of the gas is neutral is Saha's job, and
-    `line_emissivity` combines the two.
-    """
     _check_temperature(temperature_k)
     kt = K_EV * temperature_k
     weights = [x.degeneracy * math.exp(-x.energy_ev / kt) for x in levels]
@@ -221,19 +157,6 @@ def saha_ionization_fraction(
     u_neutral: float = 2.0,
     u_ion: float = 1.0,
 ) -> Quantity:
-    """The fraction of the element that comes out ionized, in [0, 1].
-
-        n_II / n_I = (2 U_II / U_I) (2 pi m_e k T / h^2)^(3/2) exp(-chi/kT) / n_e
-
-    `u_ion` defaults to 1 because removing the one electron from a hydrogen-like
-    atom leaves a bare nucleus, which has a single state.
-
-    The electron density is an independent control here, not solved
-    self-consistently with the ionization that produces it. That is a real
-    departure from an equilibrium gas: a (T, n_e) pair no single gas would hold
-    can be dialled in. It is a deliberate lab knob, and the provenance puts it
-    on the record.
-    """
     _check_temperature(temperature_k)
     if electron_density_cm3 <= 0.0:
         raise ValueError(
@@ -278,21 +201,6 @@ def level_column_fraction(
     lower_fraction: float,
     neutral_fraction: float,
 ) -> Quantity:
-    """The share of all atoms of the element in a transition's lower level.
-
-        N_l / N_element = (1 - x) * (N_l / N_neutral)
-
-    This is the absorption twin of `line_emissivity`, and the one number an
-    absorption spectrum cannot be built without. A line only absorbs out of the
-    level it starts in, so a total column density says nothing on its own: the
-    same cloud is opaque in Lyman-alpha and transparent in Balmer-alpha purely
-    because this fraction differs by orders of magnitude between 1s and 2s.
-
-    The normalization is per atom of the *element*, for the same reason the
-    emissivity uses it: it makes a column density a property of the gas rather
-    than of how ionized it happens to be, so one N covers every line in the
-    list.
-    """
     value = neutral_fraction * lower_fraction
     return Quantity(
         value=value,
@@ -323,18 +231,6 @@ def line_emissivity(
     einstein_a: float,
     photon_energy_ev: float,
 ) -> Quantity:
-    """The energy radiated in one line, per second, per atom of the element.
-
-        eps = (1 - x) * (N_u / N_neutral) * A * h nu
-
-    The dimension is deliberate. A 0-to-1 "relative intensity" would hide that
-    the whole spectrum dims as the gas ionizes, which is half of what the
-    density control exists to show.
-
-    The count is per atom of the *element*, neutral and ionized together, so the
-    number is comparable across temperatures: the denominator does not move when
-    the gas ionizes.
-    """
     value = neutral_fraction * upper_fraction * einstein_a * photon_energy_ev
     return Quantity(
         value=value,

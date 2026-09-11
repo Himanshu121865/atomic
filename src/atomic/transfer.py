@@ -1,24 +1,3 @@
-"""How a line eats its own light: optical depth and the curve of growth.
-
-Two earlier phases ended with the same confession: the gas was assumed
-optically thin, so a strong line never saturated and never ate its own light.
-This is the layer where that assumption stops.
-
-The ingredients were already there and only needed multiplying together. An
-oscillator strength (Phase 13) says how strongly a transition couples to light,
-a level population (Phase 17) says how many atoms are in the lower level, and a
-line profile (Phase 18) says how that coupling spreads over wavelength. Their
-product is an absorption cross-section, and a cross-section times a column
-density is an optical depth.
-
-What comes out is the curve of growth: how a line's measured strength responds
-to adding more gas. It has three regimes, and the middle one is why this phase
-exists. Once the core goes black, a hundred times more gas barely changes the
-line, so every phase before this one overstated what a strong line says about
-how much gas there is.
-
-See docs/specs/2026-07-26-phase19-optical-depth-design.md.
-"""
 
 import math
 from dataclasses import dataclass
@@ -61,12 +40,6 @@ _SATURATED_PAD: float = 40.0
 
 @dataclass(frozen=True)
 class CurveOfGrowth:
-    """Equivalent width against column density, with the regimes labelled.
-
-    The regimes are not decoration. Which branch a line sits on decides whether
-    its strength measures the amount of gas at all, and that is the single most
-    important thing to know before you read a column density off a spectrum.
-    """
 
     column_density: np.ndarray
     equivalent_width: np.ndarray
@@ -85,18 +58,6 @@ def cross_section(
     wavelength_nm: float,
     profile: np.ndarray,
 ) -> np.ndarray:
-    """The absorption cross-section in m^2, from f and an area-normalized profile.
-
-        sigma(lambda) = (e^2 / (4 eps_0 m_e c)) f phi(lambda) lambda^2 / c
-
-    `profile` is the Phase 18 Voigt, normalized to unit area **in nm**, so the
-    lambda^2/c factor converts the integrated cross-section from per-frequency
-    (where it is fixed by f alone) into per-wavelength.
-
-    The result integrates to `SIGMA_INTEGRAL * f * lambda^2 / c` no matter what
-    shape the profile has, which is the point: broadening moves the absorption
-    around in wavelength without changing how much of it there is.
-    """
     if oscillator_strength < 0.0:
         raise ValueError(f"f must be >= 0, got {oscillator_strength}")
     if wavelength_nm <= 0.0:
@@ -110,31 +71,16 @@ def cross_section(
 
 
 def optical_depth(sigma: np.ndarray, column_density_m2: float) -> np.ndarray:
-    """tau = N sigma, dimensionless.
-
-    `column_density_m2` counts absorbers **in the lower level of this
-    transition**, per square metre of sight line. Not the total gas: a line only
-    absorbs from the level it starts in, which is why the same cloud comes out
-    opaque in Lyman-alpha and transparent in Balmer-alpha.
-    """
     if column_density_m2 < 0.0:
         raise ValueError(f"column density must be >= 0, got {column_density_m2}")
     return column_density_m2 * np.asarray(sigma, dtype=float)
 
 
 def transmission(tau: np.ndarray) -> np.ndarray:
-    """Beer-Lambert: I/I_0 = exp(-tau). It goes to zero, never below it."""
     return np.exp(-np.asarray(tau, dtype=float))
 
 
 def equivalent_width(tau: np.ndarray, grid_nm: np.ndarray) -> Quantity:
-    """W = integral (1 - exp(-tau)) dlambda, in nm.
-
-    The width of a perfectly black rectangle that removes the same light. It is
-    what a spectroscopist measures, because it survives the instrument: a slit
-    function moves flux around inside the line without changing the area taken
-    out of the continuum. The tests assert that invariance.
-    """
     absorbed = 1.0 - transmission(tau)
     value = float(np.trapezoid(absorbed, grid_nm))
     return Quantity(
@@ -160,14 +106,6 @@ def equivalent_width(tau: np.ndarray, grid_nm: np.ndarray) -> Quantity:
 def _thin_limit_width(
     oscillator_strength: float, wavelength_nm: float, column_density_m2: float
 ) -> float:
-    """W in the optically thin limit, closed form, in nm.
-
-        W = (e^2 / (4 eps_0 m_e c^2)) N f lambda^2
-
-    For tau << 1, `1 - exp(-tau)` is `tau`, so W is just the integral of tau,
-    which is fixed by f alone. It is independent of every width in the problem:
-    in this regime broadening cannot change a line's strength, only its shape.
-    """
     lam_m = wavelength_nm * 1e-9
     return (
         SIGMA_INTEGRAL / _sc.c * column_density_m2 * oscillator_strength * lam_m**2
@@ -175,26 +113,6 @@ def _thin_limit_width(
 
 
 def _classify(tau_centre: float, damping_parameter: float) -> str:
-    """Name the branch from the physics that produces it, not from the slope.
-
-    Classifying by slope alone is wrong, and wrong in a way that looks right:
-    coming off the linear branch the slope falls from 1 to nearly 0 and passes
-    straight through 0.5 on the way, which would label the descent "damping"
-    before saturation had even started.
-
-    The two standard criteria instead ask what is doing the absorbing:
-
-    - `tau_centre < 1`: the core is still transparent, every atom added
-      absorbs as much as the last. Linear.
-    - `a * tau_centre > 1`, with `a = gamma / (sigma sqrt2)` the Voigt damping
-      parameter: the optical depth carried by the Lorentzian wings has reached
-      unity, so growth has moved out into wings that never end. Damping.
-    - In between the core is black and only the Doppler shoulders are still
-      growing. Saturated.
-
-    They cross in the right order for any line, because `a < 1` whenever the
-    profile has a Gaussian core at all.
-    """
     if tau_centre < 1.0:
         return "linear"
     if damping_parameter * tau_centre > 1.0:
@@ -209,15 +127,7 @@ def default_columns(
     gamma_nm: float,
     points: int = 70,
 ) -> np.ndarray:
-    """The column densities spanned to cover all three branches of one line.
-
-    A fixed range cannot do it. The knees sit where `tau_centre = 1` and where
-    `a tau_centre = 1`, and both move by orders of magnitude with the line's
-    strength and width, so a range that shows all three branches for H-alpha
-    shows one branch for a weak infrared line. The range is anchored on the
-    line's own knees and padded a few decades either side.
-    """
-    from atomic.broadening import voigt  # circular at module scope
+    from atomic.broadening import voigt
 
     peak = float(cross_section(
         oscillator_strength, wavelength_nm,
@@ -226,8 +136,8 @@ def default_columns(
     if peak <= 0.0:
         raise ValueError("this line has no absorption cross-section")
     a = gamma_nm / (sigma_nm * math.sqrt(2.0)) if sigma_nm > 0 else 1.0
-    n_thin = 1.0 / peak                      # tau_centre = 1
-    n_damp = n_thin / a if a > 0 else n_thin  # a tau_centre = 1
+    n_thin = 1.0 / peak
+    n_damp = n_thin / a if a > 0 else n_thin
     return np.geomspace(n_thin * 1e-5, n_damp * 1e4, points)
 
 
@@ -240,16 +150,6 @@ def curve_of_growth(
     points: int = 4001,
     span_fwhm: float = 400.0,
 ) -> CurveOfGrowth:
-    """Equivalent width against column density, across all three regimes.
-
-    The two widths are what is needed rather than a whole line list: a curve of
-    growth is a property of one line, and it is the widths that place the knees.
-
-    The integration window has to be wide. In the damping regime the growth is
-    carried entirely by Lorentzian wings falling as 1/x^2, so a window clipped
-    at a few widths would flatten the third branch into the second and hide the
-    physics the curve exists to show.
-    """
     if sigma_nm <= 0.0 and gamma_nm <= 0.0:
         raise ValueError("a line with no width has no curve of growth")
     columns = np.asarray(columns_m2, dtype=float)
@@ -258,12 +158,11 @@ def curve_of_growth(
     if np.any(columns <= 0.0):
         raise ValueError("column densities must be > 0 for a log-log curve")
 
-    from atomic.broadening import voigt  # circular at module scope
+    from atomic.broadening import voigt
 
     scale = max(2.3548 * sigma_nm, 2.0 * gamma_nm)
 
     def _sample(half: float):
-        """Grid, cross-section and widths for a window of half-width `half`."""
         core = np.linspace(-3.0 * scale, 3.0 * scale, points // 2)
         wings = np.geomspace(3.0 * scale, half, points // 4)
         offs = np.unique(np.concatenate([core, wings, -wings]))
@@ -325,7 +224,6 @@ def curve_of_growth(
 
 @dataclass(frozen=True)
 class AbsorbingLine:
-    """What one line contributes to a blended absorption spectrum."""
 
     wavelength_nm: float
     label: str
@@ -339,9 +237,7 @@ class AbsorbingLine:
 
 @dataclass(frozen=True)
 class AbsorptionSpectrum:
-    """A whole line list absorbing at once against a flat continuum."""
 
-    #: I/I_0 against vacuum wavelength.
     transmission: Field
     optical_depth: Field
     lines: tuple[AbsorbingLine, ...]
@@ -354,23 +250,7 @@ class AbsorptionSpectrum:
 
 
 def _window_for(profiles, lo: float, hi: float) -> tuple[float, float]:
-    """Widen a window until every line's absorption has actually ended in it.
-
-    Phase 19 taught this the expensive way, on a single line: a window sized by
-    the line's FWHM silently returns a plausible wrong equivalent width, because
-    a saturated line is far wider than its FWHM and the missing part simply
-    never gets integrated. Nothing about a list of lines makes that safer, so
-    the window is sized from the same physics.
-
-    Two half-widths, per line, whichever is larger:
-
-    - Doppler core, black out to where the Gaussian exponent eats tau_centre:
-      `sigma sqrt(2 ln tau_c)`.
-    - Lorentzian wing, where `tau = W gamma / (pi d^2)` falls to 1:
-      `d = sqrt(W gamma / pi)`. This is the one that grows without limit as
-      the column grows, and the one a FWHM-sized window misses entirely.
-    """
-    from atomic.broadening import voigt  # circular at module scope
+    from atomic.broadening import voigt
 
     reach = 0.0
     for p in profiles:
@@ -394,32 +274,7 @@ def absorb(
     window_nm: tuple[float, float] | None = None,
     max_points: int = 24_000,
 ) -> AbsorptionSpectrum:
-    """Put a whole line list in front of a flat continuum and see what lives.
-
-    This is the phase every previous one deferred. Phase 19 made one line
-    absorb; what a spectrum actually does is absorb in every line at once, out
-    of levels that hold wildly different numbers of atoms, and the result is not
-    the sum of the parts in two separate ways:
-
-    - **Saturation.** Once a core is black, more gas cannot remove more light
-      there, so the total absorbed falls below the sum of the thin-limit widths.
-      This is the Phase 19 curve of growth, now happening to every line at once
-      and at a different point on its own curve.
-    - **Blending.** Where two lines overlap, the transmissions multiply
-      (`exp(-tau_1 - tau_2)`) rather than the absorptions adding. Two lines
-      that each remove 60 percent of the light remove 84 percent together,
-      not 120. The naive sum is not merely inaccurate, it is impossible.
-
-    One `column_density_m2` for the *element* goes in, and each line's own
-    lower-level fraction turns it into that line's absorbers. That is why a
-    single number can serve the whole list, and why the Lyman lines come out
-    black while the Balmer lines stay invisible in the same gas.
-
-    The sum runs through `broadening.synthesize`, setting the area under each
-    line to its integrated optical depth, so the grid, the wing accounting and
-    the flux-closure check are the same ones the emission spectrum uses.
-    """
-    from atomic.broadening import synthesize, voigt  # circular at module scope
+    from atomic.broadening import synthesize, voigt
     from atomic.spectra import subshell_label
 
     if column_density_m2 < 0.0:
@@ -620,7 +475,6 @@ def absorption_spectrum(
     column_density_m2: float,
     label: str = "transmission",
 ) -> Field:
-    """I/I_0 against wavelength, as a Field carrying its own disclosure."""
     tau = optical_depth(sigma, column_density_m2)
     peak = float(np.max(tau)) if tau.size else 0.0
     return Field(
