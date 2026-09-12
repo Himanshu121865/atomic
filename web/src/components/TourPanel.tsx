@@ -1,0 +1,51 @@
+import { Notation } from "../lib/mathText";
+import { useAppStore } from "../state/store";
+import { tourById } from "../tours/registry";
+
+export function TourPanel() {
+  const { tourId, stepIndex, goToStep, exitTour, finishTour } = useAppStore();
+  const tour = tourId ? tourById(tourId) : null;
+  if (!tour) return null;
+  const step = tour.steps[stepIndex];
+  if (!step) return null;
+  const last = tour.steps.length - 1;
+  return (
+    <aside className="tour-panel" aria-label={`${tour.title}, step ${stepIndex + 1}`}>
+      <div className="tour-head">
+        <span className="tour-count">
+          {stepIndex + 1} / {tour.steps.length}
+        </span>
+        <span className="tour-title">
+          <Notation>{step.title}</Notation>
+        </span>
+        <button className="tour-close" type="button" onClick={exitTour} aria-label="leave the tour">
+          ✕
+        </button>
+      </div>
+      {step.body.map((p, i) => (
+        <p key={i} className="tour-body">
+          <Notation>{p}</Notation>
+        </p>
+      ))}
+      <div className="tour-nav">
+        <button
+          type="button"
+          className="link-button"
+          onClick={() => goToStep(stepIndex - 1)}
+          disabled={stepIndex === 0}
+        >
+          ‹ back
+        </button>
+        {stepIndex === last ? (
+          <button type="button" className="link-button" onClick={finishTour}>
+            finish ›
+          </button>
+        ) : (
+          <button type="button" className="link-button" onClick={() => goToStep(stepIndex + 1)}>
+            next ›
+          </button>
+        )}
+      </div>
+    </aside>
+  );
+}
