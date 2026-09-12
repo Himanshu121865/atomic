@@ -1,38 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { cloudColors, toScreen } from "./cloudColors";
+import { buildCloudColors } from "./cloudColors";
+import { INFERNO } from "./luts";
 
-describe("toScreen", () => {
-  it("maps the engine z axis to screen up", () => {
-    expect(toScreen([1, 2, 3])).toEqual([1, 3, -2]);
-  });
-});
+describe("buildCloudColors", () => {
+  const density = new Float32Array([0, 2, 1]);
+  const phase = new Float32Array([0, Math.PI / 2]);
 
-describe("cloudColors", () => {
-  const density = new Float32Array([1, 0.25]);
-
-  it("paints solid clouds one color", () => {
-    const out = cloudColors(density, null, "solid");
-    expect(out).toHaveLength(6);
-    expect([out[0], out[1], out[2]]).toEqual([out[3], out[4], out[5]]);
+  it("solid mode returns null (material colour handles it)", () => {
+    expect(buildCloudColors("solid", density, phase)).toBeNull();
   });
 
-  it("scales density colors by the peak", () => {
-    const out = cloudColors(density, null, "density");
-    const bright = out[0] + out[1] + out[2];
-    const faint = out[3] + out[4] + out[5];
-    expect(bright).toBeGreaterThan(faint);
+  it("density mode maps extremes through the inferno LUT", () => {
+    const colors = buildCloudColors("density", density, null);
+    expect(colors).not.toBeNull();
+    expect(colors).toHaveLength(9);
+    const top = INFERNO[255];
+    expect(colors![3]).toBeCloseTo(top[0] / 255, 6);
+    expect(colors![4]).toBeCloseTo(top[1] / 255, 6);
+    expect(colors![5]).toBeCloseTo(top[2] / 255, 6);
+    const bottom = INFERNO[0];
+    expect(colors![0]).toBeCloseTo(bottom[0] / 255, 6);
   });
 
-  it("falls back to density colors without phase data", () => {
-    const a = cloudColors(density, null, "phase");
-    const b = cloudColors(density, null, "density");
-    expect(Array.from(a)).toEqual(Array.from(b));
+  it("phase mode needs the phase channel", () => {
+    expect(buildCloudColors("phase", density, null)).toBeNull();
+    expect(buildCloudColors("phase", null, phase)).toHaveLength(6);
   });
 
-  it("colors phase by angle", () => {
-    const phase = new Float32Array([Math.PI / 2, -Math.PI / 2]);
-    const out = cloudColors(density, phase, "phase");
-    expect(out[0]).toBeGreaterThan(out[2]);
-    expect(out[5]).toBeGreaterThan(out[3]);
+  it("density mode without data returns null", () => {
+    expect(buildCloudColors("density", null, phase)).toBeNull();
   });
 });

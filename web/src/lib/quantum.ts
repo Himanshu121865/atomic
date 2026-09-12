@@ -1,5 +1,8 @@
 const L_LETTERS = "spdfghik";
 
+export const N_CHOICES = [1, 2, 3, 4, 5, 6];
+export const N_MAX = N_CHOICES[N_CHOICES.length - 1];
+
 export function isValidState(n: number, l: number, m: number): boolean {
   return (
     Number.isInteger(n) &&

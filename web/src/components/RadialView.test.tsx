@@ -68,6 +68,7 @@ describe("RadialView", () => {
       <RadialPlots
         radial={radial}
         meanRadius={{ value: 2.5, unit: "bohr", label: "r", provenance: { ...PROV } }}
+        width={640}
       />,
     );
     expect(html).toContain("R(r)");

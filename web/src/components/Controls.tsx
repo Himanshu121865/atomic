@@ -3,25 +3,42 @@ import { clampState } from "../lib/quantum";
 import type { Basis, PlaneQuantity } from "../api/client";
 import type { AtomModel, ColorMode, ViewMode } from "../lib/urlState";
 import { compareAvailable, gszAvailable, subshellAvailable } from "../lib/hfModel";
+import { NUCLEUS_MODES, type NucleusMode } from "../lib/nucleus";
+import { isNarrow, useViewport } from "../lib/viewport";
 import { useAppStore } from "../state/store";
 import { Choice, ControlGroup, Select, Slider, Toggle } from "./Field";
+import { ShowPhysics } from "./ShowPhysics";
 
 const PRESET_SYSTEMS = ["h", "d", "t", "mu-h", "ps", "he+"];
-const COUNTS = [10000, 100000, 500000];
+
+export const COUNT_CHOICES = [10000, 100000, 500000];
+
+export const VIEW_OPTIONS: { value: ViewMode; label: string }[] = [
+  { value: "cloud", label: "cloud" },
+  { value: "plane", label: "plane" },
+  { value: "radial", label: "radial" },
+  { value: "levels", label: "levels" },
+  { value: "spectrum", label: "spectrum" },
+  { value: "whatif", label: "whatif" },
+  { value: "forcelaw", label: "forcelaw" },
+];
 const CONFIG_RE = /^(\d[spdfgh]\d+)( \d[spdfgh]\d+)*$/;
 
 export function Controls() {
   const {
     n, l, m, system, basis, view, colorMode, planeQuantity, count,
     systems, model, config, exchange, pauli, compare, hfLevels,
+    nucleusMode,
     setQuantumNumbers, setSystem, setBasis, setView,
     setColorMode, setPlaneQuantity, setCount, setModel,
     setConfig, setExchange, setPauli, setCompare, ensureHF,
+    setNucleusMode,
   } = useAppStore();
 
   const hasGsz = gszAvailable(systems, system);
   const canCompare = compareAvailable(systems, system);
   const isScreened = systems.find((s) => s.key === system)?.kind === "screened";
+  const narrow = isNarrow(useViewport().width);
 
   useEffect(() => {
     if (model === "hf") void ensureHF();
@@ -54,16 +71,18 @@ export function Controls() {
           options={[1, 2, 3, 4, 5, 6].map((v) => ({ value: String(v), label: `n = ${v}` }))}
           onChange={(v) => pick(Number(v), l, m)}
         />
-        <Select
-          label="l"
-          value={String(l)}
-          options={Array.from({ length: n }, (_, v) => ({
-            value: String(v),
-            label: `l = ${v}`,
-            disabled: !subshellAvailable(hfLevels, model, n, v),
-          }))}
-          onChange={(v) => pick(n, Number(v), m)}
-        />
+        <div data-tour="l-picker">
+          <Select
+            label="l"
+            value={String(l)}
+            options={Array.from({ length: n }, (_, v) => ({
+              value: String(v),
+              label: `l = ${v}`,
+              disabled: !subshellAvailable(hfLevels, model, n, v),
+            }))}
+            onChange={(v) => pick(n, Number(v), m)}
+          />
+        </div>
         <Select
           label="m"
           value={String(m)}
@@ -73,17 +92,21 @@ export function Controls() {
           }))}
           onChange={(v) => pick(n, l, Number(v))}
         />
-        <Select label="system" value={system} options={systemOptions} onChange={setSystem} />
+        <div data-tour="system-picker">
+          <Select label="system" value={system} options={systemOptions} onChange={setSystem} />
+        </div>
         {systems.length > 0 && systems.some((s) => s.kind === "screened") && (
-          <Choice<AtomModel>
-            legend="model"
-            value={model}
-            onChange={setModel}
-            options={[
-              { value: "gsz", label: "screened (GSZ)", disabled: !hasGsz },
-              { value: "hf", label: "Hartree-Fock" },
-            ]}
-          />
+          <div data-tour="model-picker">
+            <Choice<AtomModel>
+              legend="model"
+              value={model}
+              onChange={setModel}
+              options={[
+                { value: "gsz", label: "screened (GSZ)", disabled: !hasGsz },
+                { value: "hf", label: "Hartree-Fock" },
+              ]}
+            />
+          </div>
         )}
         {isScreened && (
           <p className="panel-hint">
@@ -122,23 +145,26 @@ export function Controls() {
           </label>
         )}
         {isScreened && (
-          <Toggle
-            label="Compare both models"
-            checked={compare}
-            disabled={!canCompare}
-            disabledReason="This needs both models, and only one of them has parameters for this element."
-            onChange={setCompare}
-            why="Draws the total density under both models on one axis, with the number of electrons they place differently. The orbital plots stay on the model selected above."
-          />
+          <div data-tour="compare-toggle">
+            <Toggle
+              label="Compare both models"
+              checked={compare}
+              disabled={!canCompare}
+              disabledReason="This needs both models, and only one of them has parameters for this element."
+              onChange={setCompare}
+              why="Draws the total density under both models on one axis, with the number of electrons they place differently. The orbital plots stay on the model selected above."
+            />
+          </div>
         )}
         {isScreened && model === "hf" && (
           <>
-            <Toggle
-              label="distinguishable electrons"
-              checked={!exchange}
-              disabled={!pauli}
-              disabledReason="The switch below forces this on: exchange energy comes from antisymmetry, and antisymmetry is the exclusion principle."
-              onChange={(v) => setExchange(!v)}
+            <div data-tour="exchange-toggle">
+              <Toggle
+                label="distinguishable electrons"
+                checked={!exchange}
+                disabled={!pauli}
+                disabledReason="The switch below forces this on: exchange energy comes from antisymmetry, and antisymmetry is the exclusion principle."
+                onChange={(v) => setExchange(!v)}
               why={
                 !pauli
                   ? undefined
@@ -146,42 +172,53 @@ export function Controls() {
                     ? "Exchange on. The wavefunction stays antisymmetric, as it is in this universe."
                     : "Counterfactual. Exchange is gone, so the wavefunction is a product instead of a determinant. The Pauli occupancies are untouched, so this is not electrons piling into 1s."
               }
-            />
-            <Toggle
-              label="no Pauli exclusion"
-              checked={!pauli}
-              onChange={(v) => setPauli(!v)}
-              why={
-                pauli
-                  ? "Occupancies are capped at 2(2l+1), which is why the atom has shells and the periodic table has periods."
-                  : "Counterfactual, and the stronger one. The cap is gone, so every electron falls into the 1s: one level, no shells, no chemistry."
-              }
-            />
+              />
+            </div>
+            <div data-tour="pauli-toggle">
+              <Toggle
+                label="no Pauli exclusion"
+                checked={!pauli}
+                onChange={(v) => setPauli(!v)}
+                why={
+                  pauli
+                    ? "Occupancies are capped at 2(2l+1), which is why the atom has shells and the periodic table has periods."
+                    : "Counterfactual, and the stronger one. The cap is gone, so every electron falls into the 1s: one level, no shells, no chemistry. The Energy levels view compares the two energies and sizes."
+                }
+              />
+            </div>
           </>
         )}
-        <Choice<Basis>
-          legend="basis"
-          value={basis}
-          onChange={setBasis}
-          options={[
-            { value: "complex", label: "complex Y_lm" },
-            { value: "real", label: "real orbitals" },
-          ]}
-        />
+        <div data-tour="basis-picker">
+          <Choice<Basis>
+            legend="basis"
+            value={basis}
+            onChange={setBasis}
+            options={[
+              { value: "complex", label: "complex Y_lm" },
+              { value: "real", label: "real orbitals" },
+            ]}
+          />
+        </div>
       </ControlGroup>
       <ControlGroup title="View">
-        <Choice<ViewMode>
-          legend="view"
-          value={view}
-          onChange={setView}
-          options={[
-            { value: "cloud", label: "cloud" },
-            { value: "plane", label: "plane" },
-            { value: "radial", label: "radial" },
-            { value: "levels", label: "levels" },
-            { value: "spectrum", label: "spectrum" },
-          ]}
-        />
+        {
+}
+        {!narrow && (
+          <div data-tour="view-list">
+            <Choice<ViewMode>
+              legend="view"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: "cloud", label: "cloud" },
+                { value: "plane", label: "plane" },
+                { value: "radial", label: "radial" },
+                { value: "levels", label: "levels" },
+                { value: "spectrum", label: "spectrum" },
+              ]}
+            />
+          </div>
+        )}
         <Choice<ColorMode>
           legend="cloud color"
           value={colorMode}
@@ -201,16 +238,35 @@ export function Controls() {
             { value: "psi", label: "psi" },
           ]}
         />
+        {
+}
+        {narrow && (
+          <p className="panel-hint">
+            A phone opens at {COUNT_CHOICES[0].toLocaleString()} draws. The larger
+            counts still work here and will be slower to draw, not less accurate:
+            the sampler is the same one either way, and more draws is a finer
+            picture of the same |ψ|².
+          </p>
+        )}
         <Slider
           label="cloud points"
           readout={count.toLocaleString()}
           min={1000}
           max={1000000}
           step={1000}
-          value={COUNTS.reduce((a, b) => (Math.abs(b - count) < Math.abs(a - count) ? b : a))}
+          value={COUNT_CHOICES.reduce((a, b) => (Math.abs(b - count) < Math.abs(a - count) ? b : a))}
           onChange={setCount}
         />
+        <div data-tour="nucleus-picker">
+          <Choice<NucleusMode>
+            legend="nucleus"
+            value={nucleusMode}
+            onChange={setNucleusMode}
+            options={NUCLEUS_MODES.map((o) => ({ value: o.value, label: o.label }))}
+          />
+        </div>
       </ControlGroup>
+      <ShowPhysics />
     </div>
   );
 }

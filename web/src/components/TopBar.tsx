@@ -1,5 +1,9 @@
+import { useEffect, useState } from "react";
 import type { ViewMode } from "../lib/urlState";
+import { isNarrow, useViewport } from "../lib/viewport";
 import { useAppStore } from "../state/store";
+import { Shortcuts } from "./Shortcuts";
+import { TourMenu } from "./TourMenu";
 
 const TABS: { value: ViewMode; label: string }[] = [
   { value: "cloud", label: "Cloud" },
@@ -11,8 +15,35 @@ const TABS: { value: ViewMode; label: string }[] = [
   { value: "forcelaw", label: "Force Law" },
 ];
 
+function CopyLink({ narrow }: { narrow: boolean }) {
+  const [said, setSaid] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (said === "idle") return;
+    const t = setTimeout(() => setSaid("idle"), 1600);
+    return () => clearTimeout(t);
+  }, [said]);
+  return (
+    <button
+      className="topbar-btn"
+      type="button"
+      title="Copy a link to this exact state"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(window.location.href);
+          setSaid("copied");
+        } catch {
+          setSaid("failed");
+        }
+      }}
+    >
+      {said === "idle" ? (narrow ? "link" : "copy link") : said === "copied" ? "copied" : "failed"}
+    </button>
+  );
+}
+
 export function TopBar() {
   const { view, setView, n, l, m, system } = useAppStore();
+  const { width } = useViewport();
   return (
     <header className="topbar">
       <span className="brand">atomic</span>
@@ -30,6 +61,9 @@ export function TopBar() {
           </button>
         ))}
       </nav>
+      <CopyLink narrow={isNarrow(width)} />
+      <Shortcuts />
+      <TourMenu />
     </header>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeFloats, decodePositions } from "./client";
+import { decodeFloats, decodeIndices, decodePositions } from "./client";
 
 describe("decodePositions", () => {
   it("decodes interleaved xyz float32", () => {
@@ -20,5 +20,15 @@ describe("decodeFloats", () => {
   });
   it("rejects lengths that are not multiples of 4", () => {
     expect(() => decodeFloats(new ArrayBuffer(5))).toThrow(/multiple of 4/);
+  });
+});
+
+describe("decodeIndices", () => {
+  it("decodes triangle uint32 buffers", () => {
+    const buf = new Uint32Array([0, 1, 2]).buffer;
+    expect(Array.from(decodeIndices(buf))).toEqual([0, 1, 2]);
+  });
+  it("rejects lengths that are not whole triangles", () => {
+    expect(() => decodeIndices(new ArrayBuffer(8))).toThrow(/multiple of 12/);
   });
 });

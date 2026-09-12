@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isScreenedLevels } from "../api/client";
+import { FLAGSHIP_TOUR_ID } from "../tours/registry";
 import { useAppStore } from "./store";
 
 const SYSTEM = {
@@ -205,7 +206,7 @@ describe("loaders", () => {
   it("loads the what-if lab and the ghost", async () => {
     const s = useAppStore.getState();
     await s.loadWhatIf();
-    expect(useAppStore.getState().whatif?.altered).toBe(false);
+    expect(useAppStore.getState().whatif?.report.altered).toBe(false);
     expect(useAppStore.getState().whatifStatus).toBe("ready");
     await s.loadGhost();
     expect(useAppStore.getState().ghost?.z).toBe(1);
@@ -326,5 +327,115 @@ describe("loaders", () => {
     expect(sent["config"]).toBe("1s2 2s1");
     expect(sent["exchange"]).toBe(false);
     expect(sent["pauli"]).toBe(true);
+  });
+});
+
+describe("the Back button's landing pad", () => {
+  function pretendLoaded() {
+    useAppStore.setState({
+      positions: new Float32Array(3),
+      density: new Float32Array(1),
+      phase: new Float32Array(1),
+      stateInfo: {} as never,
+      plane: {} as never,
+      radial: {} as never,
+      levels: {} as never,
+      spectrum: {} as never,
+      status: "ready",
+    });
+  }
+
+  it("applies a URL as a whole state, not as a patch", () => {
+    useAppStore.setState({ bField: 4, fineStructure: true, colorMode: "density" });
+    useAppStore.getState().applyUrl({ n: 3, l: 1, m: 0 });
+    const s = useAppStore.getState();
+    expect([s.n, s.l, s.m]).toEqual([3, 1, 0]);
+    expect(s.bField).toBe(0);
+    expect(s.fineStructure).toBe(false);
+    expect(s.colorMode).toBe("solid");
+  });
+
+  it("clears everything the previous place derived", () => {
+    pretendLoaded();
+    useAppStore.getState().applyUrl({ system: "mu-h" });
+    const s = useAppStore.getState();
+    expect(s.positions).toBeNull();
+    expect(s.plane).toBeNull();
+    expect(s.levels).toBeNull();
+    expect(s.spectrum).toBeNull();
+    expect(s.status).toBe("idle");
+  });
+
+  it("steps back into a tour, and out of one", () => {
+    useAppStore.getState().applyUrl({ tour: FLAGSHIP_TOUR_ID, step: 2 });
+    expect(useAppStore.getState().tourId).toBe(FLAGSHIP_TOUR_ID);
+    expect(useAppStore.getState().stepIndex).toBe(2);
+    expect(useAppStore.getState().savedState).not.toBeNull();
+    useAppStore.getState().applyUrl({});
+    expect(useAppStore.getState().tourId).toBeNull();
+    expect(useAppStore.getState().savedState).toBeNull();
+  });
+});
+
+describe("the counterfactual switches", () => {
+  it("default to real physics, so no session lands in the counterfactual", () => {
+    expect(useAppStore.getInitialState().exchange).toBe(true);
+    expect(useAppStore.getInitialState().pauli).toBe(true);
+  });
+
+  it("setExchange drops the solve, which was for the other model", () => {
+    useAppStore.setState({ hfLevels: { fake: true } as never, hfStatus: "ready" });
+    useAppStore.getState().setExchange(false);
+    const s = useAppStore.getState();
+    expect(s.exchange).toBe(false);
+    expect(s.hfLevels).toBeNull();
+    expect(s.hfStatus).toBe("idle");
+  });
+
+  it("setPauli drops the solve and resets the configuration to the new ground rule", () => {
+    useAppStore.setState({
+      hfLevels: { fake: true } as never,
+      hfStatus: "ready",
+      config: "1s2 2s2 2p6",
+    });
+    useAppStore.getState().setPauli(false);
+    const s = useAppStore.getState();
+    expect(s.pauli).toBe(false);
+    expect(s.exchange).toBe(false);
+    expect(s.config).toBeNull();
+    expect(s.hfLevels).toBeNull();
+    expect(s.hfStatus).toBe("idle");
+  });
+
+  it("turning exchange back on restores the cap", () => {
+    useAppStore.setState({ pauli: false, exchange: false });
+    useAppStore.getState().setExchange(true);
+    expect(useAppStore.getState().pauli).toBe(true);
+  });
+
+  it("never holds pauli off with exchange on", () => {
+    const store = useAppStore.getState();
+    for (const step of [
+      () => store.setPauli(false),
+      () => store.setExchange(false),
+      () => store.setExchange(true),
+      () => store.setPauli(false),
+      () => store.setPauli(true),
+    ]) {
+      step();
+      const s = useAppStore.getState();
+      expect(!s.pauli && s.exchange).toBe(false);
+    }
+  });
+
+  it("altered physics does not follow the user to the next atom", () => {
+    useAppStore.setState({ exchange: false });
+    useAppStore.getState().setSystem("ar");
+    expect(useAppStore.getState().exchange).toBe(true);
+
+    useAppStore.setState({ pauli: false, exchange: false });
+    useAppStore.getState().setSystem("ar");
+    expect(useAppStore.getState().pauli).toBe(true);
+    expect(useAppStore.getState().exchange).toBe(true);
   });
 });

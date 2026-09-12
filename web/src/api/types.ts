@@ -340,6 +340,33 @@ export interface PlaneMeta {
   provenance: Provenance;
 }
 
+export interface IsoMeta {
+  kind: "isosurface";
+  vertex_count: number;
+  triangle_count: number;
+  channels: ChannelInfo[];
+  target_fraction: number;
+  enclosed_fraction: Quantity;
+  outside_fraction: number;
+  level: Quantity;
+  escaped_fraction: Quantity;
+  mesh_volume: Quantity;
+  voxel_volume: Quantity;
+  area: Quantity;
+  components: number;
+  half_width: number;
+  resolution: number;
+  axis_unit: string;
+  n: number;
+  l: number;
+  m: number;
+  basis: string;
+  system: string;
+  model: string;
+  label: string;
+  provenance: Provenance;
+}
+
 export interface HFOrbital {
   n: number;
   l: number;
@@ -350,6 +377,27 @@ export interface HFOrbital {
   channel: string;
 }
 
+export interface PauliCollapse {
+  binding_change: Quantity;
+  binding_change_ev: Quantity;
+  real_total_energy: Quantity;
+  real_total_energy_ev: Quantity;
+  real_config: string;
+  real_radius: Quantity;
+  collapsed_radius: Quantity;
+  radius_ratio: Quantity;
+  variational_zeta: Quantity;
+  variational_energy: Quantity;
+  variational_energy_ev: Quantity;
+}
+
+export interface ManyElectronParams {
+  model: "gsz" | "hf";
+  config: string | null;
+  exchange: boolean;
+  pauli: boolean;
+}
+
 export interface HFLevels {
   kind: "hf";
   z: number;
@@ -357,6 +405,11 @@ export interface HFLevels {
   symbol: string | null;
   config: string;
   is_ground: boolean;
+  exchange: boolean;
+  exchange_energy: Quantity | null;
+  exchange_energy_ev: Quantity | null;
+  pauli: boolean;
+  collapse: PauliCollapse | null;
   orbitals: HFOrbital[];
   total_energy: Quantity;
   total_energy_ev: Quantity;
@@ -372,7 +425,7 @@ export interface HFLevels {
   channels: ChannelInfo[];
 }
 
-export type JobMeta = SampleMeta | PlaneMeta | HFLevels;
+export type JobMeta = SampleMeta | PlaneMeta | IsoMeta | HFLevels;
 
 export interface DerivedObservable {
   quantity: Quantity;

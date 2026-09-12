@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { isNarrow } from "../lib/viewport";
 
 export interface ViewLead {
   title: string;
@@ -15,13 +16,17 @@ export function ViewIntro({
   badge?: ReactNode;
   children?: ReactNode;
 }) {
+  const open =
+    typeof window === "undefined" ? true : !isNarrow(window.innerWidth);
   return (
-    <div className="view-intro">
-      <h2>{lead.title}</h2>
+    <details className="view-intro" open={open}>
+      <summary className="view-intro-title">
+        {lead.title}
+        {badge ? <span className="view-intro-badge">{badge}</span> : null}
+      </summary>
       <p className="view-lead">{lead.lead}</p>
       {lead.notice !== undefined && <p className="view-notice">{lead.notice}</p>}
-      {badge}
       {children}
-    </div>
+    </details>
   );
 }

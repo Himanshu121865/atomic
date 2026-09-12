@@ -97,18 +97,20 @@ export function getLevels(
   nMax: number,
   fineStructure: boolean,
   alpha?: number,
+  config?: string | null,
   dirac = false,
   bField = 0,
   eField = 0,
   hyperfine = false,
 ): Promise<LevelsResponse | ScreenedLevels> {
   const a = alpha === undefined ? "" : `&alpha=${alpha}`;
+  const c = config ? `&config=${encodeURIComponent(config)}` : "";
   const d = dirac ? "&dirac=true" : "";
   const b = bField > 0 ? `&b_field=${bField}` : "";
   const e = eField > 0 ? `&e_field=${eField}` : "";
   const h = hyperfine ? "&hyperfine=true" : "";
   return getJson(
-    `/api/levels?system=${key(system)}&n_max=${nMax}&fine_structure=${fineStructure}${a}${d}${b}${e}${h}`,
+    `/api/levels?system=${key(system)}&n_max=${nMax}&fine_structure=${fineStructure}${a}${c}${d}${b}${e}${h}`,
   );
 }
 
@@ -283,6 +285,54 @@ export interface PlaneParams {
 
 export function createPlaneJob(params: PlaneParams): Promise<JobInfo> {
   return postJson("/api/jobs/plane", { resolution: 256, ...params });
+}
+
+export interface IsoParams {
+  n: number;
+  l: number;
+  m: number;
+  fraction: number;
+  basis: Basis;
+  system: string;
+  resolution?: number;
+  model?: "gsz" | "hf";
+  config?: string | null;
+  exchange?: boolean;
+  pauli?: boolean;
+}
+
+export function createIsoJob(params: IsoParams): Promise<JobInfo> {
+  return postJson("/api/jobs/isosurface", { resolution: 96, ...params });
+}
+
+export async function getIndexChannel(
+  jobId: string,
+  channel: string,
+): Promise<Uint32Array> {
+  const url = `/api/jobs/${jobId}/data?channel=${channel}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  return decodeIndices(await res.arrayBuffer());
+}
+
+export function thumbnailUrl(
+  n: number,
+  l: number,
+  m: number,
+  system: string,
+  basis: Basis,
+  size: number,
+): string {
+  return `/api/thumbnail/${n}/${l}/${m}?system=${key(system)}&basis=${basis}&size=${size}`;
+}
+
+export function decodeIndices(buffer: ArrayBuffer): Uint32Array {
+  if (buffer.byteLength % 12 !== 0) {
+    throw new Error(
+      `triangle byte length ${buffer.byteLength} is not a multiple of 12 (3 x uint32)`,
+    );
+  }
+  return new Uint32Array(buffer);
 }
 
 export function watchJob(jobId: string, onProgress: (p: number) => void): Promise<void> {

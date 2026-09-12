@@ -1,17 +1,48 @@
+import { scaleLinear } from "d3-scale";
 import { useEffect } from "react";
+import type { ConstMultipliers } from "../api/client";
 import type { DerivedObservable } from "../api/types";
+import {
+  activeScenario,
+  CONSTANT_BLURBS,
+  SCENARIOS,
+  VIEW_LEADS,
+  type ScenarioMultipliers,
+} from "../lib/explain";
+import { spreadLabels } from "../lib/levels";
+import {
+  CONST_MAX,
+  CONST_MIN,
+  CONSTANT_KEYS,
+  CONSTANT_LABELS,
+  fineErrorFraction,
+  formatAlpha,
+  formatRatio,
+  shellSplitting,
+} from "../lib/whatif";
 import { formatSeconds } from "../lib/classical";
-import { CONST_MAX, CONST_MIN, CONSTANT_KEYS, CONSTANT_LABELS, formatRatio } from "../lib/whatif";
+import { Notation, mathTspans } from "../lib/mathText";
+import { plotHeight, usePlotWidth } from "../lib/plotSize";
 import { useAppStore } from "../state/store";
+import { withinView } from "../lib/zoom";
 import { Badge } from "./Badge";
+import { Disclosure } from "./Disclosure";
 import { ControlGroup, Slider } from "./Field";
+import { OffWindowMarks, usePlotZoom, ZoomControls } from "./PlotZoom";
 import { ViewIntro } from "./ViewIntro";
+
+const SHAPE = { floor: 720, ratio: 0.667, min: 400, max: 560 };
+const ZOOM_N = 2;
+
+const REAL_ALL: ConstMultipliers = { hbar: 1, e: 1, m_e: 1, eps0: 1, c: 1 };
 
 export function WhatIfView() {
   const {
-    labConst, setLabConst, whatif, whatifStatus, loadWhatIf,
+    labConst, labZ, whatif, whatifStatus, error,
+    setLabConst, setLabZ, loadWhatIf,
     ghost, ghostStatus, loadGhost, n, system,
   } = useAppStore();
+
   useEffect(() => {
     if (whatif === null && whatifStatus === "idle") void loadWhatIf();
   }, [whatif, whatifStatus, loadWhatIf]);
@@ -19,23 +50,40 @@ export function WhatIfView() {
     if (ghost === null && ghostStatus === "idle") void loadGhost();
   }, [n, system, ghost, ghostStatus, loadGhost]);
 
+  const { width: W, compact, ref: wrapRef } = usePlotWidth(SHAPE.floor);
+  const H = plotHeight(W, SHAPE.ratio, compact ? 300 : SHAPE.min, SHAPE.max);
+  const ladderRange: [number, number] = [H - 40, 60];
+  const zoom = usePlotZoom({
+    width: W,
+    height: H,
+    y: {
+      domain: [whatif ? whatif.real.gross[0].energy.value : -0.5, 0],
+      range: ladderRange,
+    },
+  });
+
   if (whatifStatus === "error" || !whatif) {
     return (
-      <div className="view-wrap">
+      <div className="view-wrap" ref={wrapRef}>
+        <ViewIntro lead={VIEW_LEADS.whatif} />
         <p className="hint-block">
-          {whatifStatus === "error" ? "The lab failed to compute." : "Loading the What-If lab…"}
+          {whatifStatus === "error" ? `The lab failed to compute: ${error ?? "unknown reason"}` : "Loading the What-If lab…"}
         </p>
       </div>
     );
   }
 
-  const { report } = { report: whatif };
+  const { report, real, altered } = whatif;
+  const altOn = report.altered;
+  const beyondValidity = altOn && altered === null;
+  const alphaValue = report.alpha.quantity.value;
+
   const readouts: { key: string; label: string; obs: DerivedObservable; text: string }[] = [
     {
       key: "alpha",
       label: "α: fine-structure constant",
       obs: report.alpha,
-      text: report.alpha.quantity.value.toExponential(3),
+      text: `${formatAlpha(alphaValue)} (${alphaValue.toExponential(3)})`,
     },
     {
       key: "a0",
@@ -50,38 +98,151 @@ export function WhatIfView() {
       text: `${report.hartree_ev.quantity.value.toFixed(3)} eV`,
     },
   ];
+
+  const y = scaleLinear(zoom.y, ladderRange);
+  const rx1 = compact ? 58 : 70;
+  const rx2 = compact ? W - 84 : Math.round(0.417 * W);
+  const fineX1 = compact ? 20 : Math.round(0.653 * W);
+  const fineX2 = compact ? Math.round(W * 0.52) : Math.round(0.819 * W);
+  const fineMid = compact ? Math.round(W / 2) : Math.round(0.736 * W);
+  const gross = withinView(real.gross, (g) => g.energy.value, zoom.y);
+  const grossY = gross.map((g) => y(g.energy.value));
+  const grossLabelY = spreadLabels(grossY, 13, 46, H - 28);
+
+  const realFine = (real.fine ?? []).filter((f) => f.n === ZOOM_N);
+  const altFine = (altered?.fine ?? []).filter((f) => f.n === ZOOM_N);
+  const shifts = [...realFine, ...altFine].map((f) => f.shift.value * 1e6);
+  const lo = Math.min(0, ...shifts);
+  const hi = Math.max(0, ...shifts);
+  const pad = (hi - lo || 1) * 0.2;
+  const yz = scaleLinear([lo - pad, hi + pad], [H - 60, 90]);
+  const columns = [
+    { x: fineX1, rows: realFine, label: "real", cf: false },
+    { x: fineX2, rows: altFine, label: "altered", cf: true },
+  ];
+
+  const errFrac = fineErrorFraction(altered?.fine ?? null);
+  const splitUeH = shellSplitting(
+    (altered?.fine ?? []).map((f) => ({ ...f, shift_ev: f.shift })),
+    ZOOM_N,
+  ) * 1e6;
+
   const changed = readouts.filter((r) => r.obs.changed).map((r) => r.label.split(" ")[0]);
-  const caption = !report.altered
-    ? "Drag any raw constant. Only dimensionless and fixed-ruler quantities are observable: try e ×2 and ε₀ ×4 together."
-    : changed.length === 0
-      ? "The constants moved, but α, a₀ and E_h all came back unchanged: a different universe, observationally identical to ours."
-      : `Altered. Observably changed: ${changed.join(", ")}.`;
+  const caption = (() => {
+    if (beyondValidity) {
+      return `The derived α = ${formatAlpha(alphaValue)} exceeds 0.5, so the perturbative fine structure is meaningless here and the altered split is not drawn. The readouts still show the true α. This is the model's honest boundary, not a glitch.`;
+    }
+    if (altOn && changed.length === 0) {
+      return "The constants moved, but α, a₀ and E_h all came back unchanged: a different universe, observationally identical to ours. That degeneracy is the whole lesson, because only dimensionless combinations and fixed-ruler scales are observable.";
+    }
+    if (altOn) {
+      return `Altered. Observably changed: ${changed.join(", ")}. The fine-structure fractional error is about ${(errFrac * 100).toFixed(1)}%, and it grows as (Zα)²; the n=${ZOOM_N} split comes to about ${splitUeH.toFixed(1)} µE_h. The gross ladder is α-independent structure, and absolute size and binding stay in the readouts.`;
+    }
+    return "Drag any raw constant. α, a₀ and E_h are derived from all five, and only those dimensionless and fixed-ruler quantities are observable. Watch which ones actually move: try e ×2 and ε₀ ×4 together.";
+  })();
+
+  const scenario = activeScenario(labConst as ScenarioMultipliers);
+
+  const finePanel = (
+    <>
+      <text x={fineMid} y={54} textAnchor="middle" className="tick">
+        {mathTspans(`n=${ZOOM_N} fine split [µE_h], real vs altered`)}
+      </text>
+      {beyondValidity ? (
+        <text x={fineMid} y={H / 2} textAnchor="middle" className="tick">
+          α &gt; 0.5, past where the perturbation can be trusted
+        </text>
+      ) : (
+        columns.map((col) => (
+          <g key={col.label}>
+            <text x={col.x + 20} y={78} textAnchor="middle" className="tick">
+              {col.label}
+            </text>
+            {col.rows.map((f) => (
+              <g key={`${col.label}-${f.l}-${f.j}`}>
+                <line
+                  x1={col.x}
+                  x2={col.x + 40}
+                  y1={yz(f.shift.value * 1e6)}
+                  y2={yz(f.shift.value * 1e6)}
+                  className={col.cf && altOn ? "rung rung-counterfactual" : "rung"}
+                />
+                <text x={col.x + 46} y={yz(f.shift.value * 1e6)} dy="0.32em" className="tick">
+                  j={f.j} · {(f.shift.value * 1e6).toFixed(1)}
+                </text>
+              </g>
+            ))}
+          </g>
+        ))
+      )}
+    </>
+  );
 
   return (
-    <div className="view-wrap">
+    <div className="view-wrap" ref={wrapRef}>
       <ViewIntro
-        lead={{
-          title: "What if the constants were different?",
-          lead:
-            "Five sliders over the raw constants of nature. The three readouts below " +
-            "are the only things anyone could actually measure.",
-        }}
+        lead={VIEW_LEADS.whatif}
         badge={<Badge provenance={report.alpha.quantity.provenance} />}
-      />
-      {report.altered && (
+      >
+        <Disclosure summary="Why most changes here change nothing">
+          <p className="caption">
+            A constant with units is a statement about the ruler as much as
+            about the world. Double the electron's charge and you have changed
+            a number, but you have also changed every measuring device made of
+            charges, and the two changes can cancel exactly.
+          </p>
+          <p className="caption">
+            What survives is the dimensionless combination. α = e²/(4πε₀ℏc) has
+            no units at all, so nothing about your choice of metre or second
+            can move it, and that is precisely why it is the one number in this
+            panel that a different universe could genuinely disagree with us
+            about. Try "the same universe in disguise" below and watch all three
+            readouts hold still while two constants move by a factor of four.
+          </p>
+        </Disclosure>
+      </ViewIntro>
+
+      {altOn && (
         <div className="counterfactual-banner">
-          COUNTERFACTUAL · altered constants
+          COUNTERFACTUAL · derived α = {formatAlpha(alphaValue)}
         </div>
       )}
+
+      <ControlGroup
+        title="Prepared universes"
+        hint="Each of these makes one point and no other. Pick one, then read the three observables underneath."
+        tone={scenario && scenario.key !== "real" ? "active" : "plain"}
+      >
+        <div className="scenario-row">
+          {SCENARIOS.map((s) => (
+            <button
+              key={s.key}
+              type="button"
+              className={`ctl-choice-btn${scenario?.key === s.key ? " ctl-choice-on" : ""}`}
+              aria-pressed={scenario?.key === s.key}
+              onClick={() => setLabConst(s.multipliers as Partial<ConstMultipliers>)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+        <p className="ctl-choice-hint">
+          {scenario
+            ? scenario.blurb
+            : "Your own combination. None of the prepared ones matches it."}
+        </p>
+      </ControlGroup>
+
       <h3 className="readouts-head">The three things you could actually measure</h3>
       <dl className="readouts">
         {readouts.map((r) => (
           <div key={r.key} className="readout-row">
             <dt>
-              {r.label} <Badge provenance={r.obs.quantity.provenance} />
+              <Notation>{r.label}</Notation>{" "}
+              <Badge provenance={r.obs.quantity.provenance} />
             </dt>
             <dd>
-              {r.text}{" "}
+              <Notation>{r.text}</Notation>{" "}
               <span className={r.obs.changed ? "readout-ratio changed" : "readout-ratio"}>
                 {formatRatio(r.obs.ratio)}
               </span>
@@ -89,34 +250,113 @@ export function WhatIfView() {
           </div>
         ))}
       </dl>
-      <p className="caption">{caption}</p>
+
+      <svg
+        viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }}
+        role="img"
+        className={`levels-svg plot-zoomable${zoom.dragging ? " plot-panning" : ""}`}
+        ref={zoom.ref}
+        {...zoom.handlers}
+      >
+        <text x={(rx1 + rx2) / 2} y={30} textAnchor="middle" className="tick">
+          {mathTspans(
+            `gross levels (Z=${real.system.z}): structure in units of E_h, α-independent`,
+          )}
+        </text>
+        <OffWindowMarks
+          above={real.gross.filter((g) => g.energy.value > Math.max(...zoom.y)).length}
+          below={real.gross.filter((g) => g.energy.value < Math.min(...zoom.y)).length}
+          x={rx1} top={46} bottom={H - 14} noun="shell"
+        />
+        {gross.map((g, i) => {
+          const yr = grossY[i];
+          const yl = grossLabelY[i];
+          const nudged = Math.abs(yl - yr) > 1;
+          return (
+            <g key={g.n}>
+              <line x1={rx1} x2={rx2} y1={yr} y2={yr} className="rung" />
+              {nudged && (
+                <>
+                  <line x1={rx1 - 30} x2={rx1 - 6} y1={yl} y2={yr} className="leader" />
+                  <line x1={rx2 + 4} x2={rx2 + 26} y1={yr} y2={yl} className="leader" />
+                </>
+              )}
+              <text x={rx1 - 32} y={yl} dy="0.32em" textAnchor="end" className="tick">
+                n={g.n}
+              </text>
+              <text x={rx2 + 30} y={yl} dy="0.32em" className="tick">
+                2n²={g.degeneracy}
+              </text>
+            </g>
+          );
+        })}
+        {!compact && finePanel}
+      </svg>
+      {compact && (
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }} role="img" className="levels-svg">
+          {finePanel}
+        </svg>
+      )}
+      <ZoomControls zoom={zoom} what="the ladder's energy axis" />
+
+      <p className={beyondValidity ? "error" : "caption"}>{caption}</p>
+
       <ControlGroup
         title="Or move one constant at a time"
-        hint="Each slider runs from a quarter to four times its measured value."
+        hint="Each slider runs from a quarter to four times its measured value. Any slider moved off ×1.00 lights up."
+        tone={altOn ? "active" : "plain"}
       >
-        <div className="const-sliders">
+        <div className="const-sliders" data-tour="const-sliders">
           {CONSTANT_KEYS.map((k) => (
             <Slider
               key={k}
-              label={CONSTANT_LABELS[k]}
+              label={`${CONSTANT_LABELS[k]} · ${CONSTANT_BLURBS[k]}`}
               readout={`×${labConst[k].toFixed(2)}`}
+              atRest={labConst[k] === 1}
               min={Math.log2(CONST_MIN)}
               max={Math.log2(CONST_MAX)}
               step={0.25}
               value={Math.log2(labConst[k])}
-              onChange={(v) => setLabConst({ [k]: 2 ** v })}
+              onChange={(v) =>
+                setLabConst({ [k]: 2 ** v } as Partial<ConstMultipliers>)
+              }
             />
           ))}
         </div>
       </ControlGroup>
-      <button
-        type="button"
-        className="primary"
-        disabled={!report.altered}
-        onClick={() => setLabConst({ hbar: 1, e: 1, m_e: 1, eps0: 1, c: 1 })}
-      >
-        reset to real constants
-      </button>
+
+      <div className="whatif-controls">
+        <div className="stepper">
+          <span>nuclear charge Z</span>
+          <div className="stepper-ctl">
+            <button
+              type="button"
+              aria-label="decrease nuclear charge"
+              onClick={() => setLabZ(Math.max(1, labZ - 1))}
+              disabled={labZ <= 1}
+            >
+              −
+            </button>
+            <span className="stepper-value">{labZ}</span>
+            <button
+              type="button"
+              aria-label="increase nuclear charge"
+              onClick={() => setLabZ(Math.min(10, labZ + 1))}
+              disabled={labZ >= 10}
+            >
+              +
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="primary"
+          disabled={!altOn}
+          onClick={() => setLabConst(REAL_ALL)}
+        >
+          reset to real constants
+        </button>
+      </div>
       <h3 className="readouts-head">The classical ghost: what Newton predicts</h3>
       {ghostStatus === "error" || !ghost ? (
         <p className="hint-block">

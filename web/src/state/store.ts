@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  createIsoJob,
   createPlaneJob,
   createSampleJob,
   createHFJob,
@@ -9,6 +10,7 @@ import {
   getConstants,
   getCurveOfGrowth,
   getForceLaw,
+  getIndexChannel,
   getJobMeta,
   getLevels,
   getRadial,
@@ -16,6 +18,7 @@ import {
   getState,
   getSystems,
   isHFLevels,
+  isScreenedLevels,
   type Basis,
   type ConstMultipliers,
   type PlaneQuantity,
@@ -27,6 +30,7 @@ import type {
   CurveOfGrowthInfo,
   ForceLawResult,
   HFLevels,
+  IsoMeta,
   JobMeta,
   LevelsResponse,
   PlaneMeta,
@@ -39,8 +43,16 @@ import type {
 } from "../api/types";
 import type { ForcePreset } from "../lib/forceLaw";
 import { DEFAULT_EXPR, defaultParams } from "../lib/forceLaw";
-import type { AtomModel, ColorMode, ViewMode } from "../lib/urlState";
-import { resolveModel } from "../lib/hfModel";
+import type { Snap } from "../lib/sheet";
+import type { AtomModel, ColorMode, SurfaceMode, UrlState, ViewMode } from "../lib/urlState";
+import { URL_DEFAULTS, currentUrlState } from "../lib/urlState";
+import type { NucleusMode } from "../lib/nucleus";
+import { isAlphaValid } from "../lib/whatif";
+import { manyElectronParams, resolveModel } from "../lib/hfModel";
+import { tourReset } from "../tours/apply";
+import { tourById } from "../tours/registry";
+import { readMemory, rememberCompleted, rememberDismissed, shouldInvite } from "../tours/seen";
+import { clampStep, stepState } from "../tours/step";
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
@@ -48,6 +60,15 @@ export interface PlaneData {
   meta: PlaneMeta;
   values: Float32Array;
 }
+
+export interface IsoData {
+  meta: IsoMeta;
+  vertices: Float32Array;
+  triangles: Uint32Array;
+  phase: Float32Array;
+}
+
+export const ISO_FRACTIONS = [0.5, 0.75, 0.9, 0.95, 0.99] as const;
 
 interface AppState {
   n: number;
@@ -59,6 +80,7 @@ interface AppState {
   colorMode: ColorMode;
   planeQuantity: PlaneQuantity;
   count: number;
+  sheet: Snap;
   systems: SystemInfo[];
   stateInfo: StateResponse | null;
   positions: Float32Array | null;
@@ -86,10 +108,17 @@ interface AppState {
   logColumn: number;
   absorptionData: AbsorptionInfo | null;
   labConst: ConstMultipliers;
-  whatif: ConstantsReport | null;
+  labZ: number;
+  whatif: {
+    report: ConstantsReport;
+    real: LevelsResponse;
+    altered: LevelsResponse | null;
+  } | null;
   whatifStatus: LoadStatus;
   ghost: ClassicalGhost | null;
   ghostStatus: LoadStatus;
+  ghostOn: boolean;
+  setGhostOn: (ghostOn: boolean) => void;
   forcePreset: ForcePreset;
   forceParams: Record<string, number>;
   forceL: number;
@@ -104,6 +133,7 @@ interface AppState {
   model: AtomModel;
   setModel: (model: AtomModel) => void;
   hfLevels: HFLevels | null;
+  hfStatus: LoadStatus;
   loadHF: () => Promise<void>;
   ensureHF: () => Promise<boolean>;
   config: string | null;
@@ -121,6 +151,7 @@ interface AppState {
   setColorMode: (colorMode: ColorMode) => void;
   setPlaneQuantity: (planeQuantity: PlaneQuantity) => void;
   setCount: (count: number) => void;
+  setSheet: (sheet: Snap) => void;
   loadSystems: () => Promise<void>;
   loadStateInfo: () => Promise<void>;
   sample: () => Promise<void>;
@@ -141,6 +172,7 @@ interface AppState {
   setLogColumn: (logColumn: number) => void;
   loadAbsorption: () => Promise<void>;
   setLabConst: (partial: Partial<ConstMultipliers>) => void;
+  setLabZ: (labZ: number) => void;
   loadWhatIf: () => Promise<void>;
   loadGhost: () => Promise<void>;
   setForcePreset: (preset: ForcePreset) => void;
@@ -152,10 +184,31 @@ interface AppState {
   setDirac: (on: boolean) => void;
   setBField: (b: number) => void;
   setEField: (e: number) => void;
-  setHyperfine: (on: boolean) => void;
+  setHyperfine: (hyperfine: boolean) => void;
+  nucleusMode: NucleusMode;
+  setNucleusMode: (nucleusMode: NucleusMode) => void;
+  surfaceMode: SurfaceMode;
+  setSurfaceMode: (surfaceMode: SurfaceMode) => void;
+  isoFraction: number;
+  setIsoFraction: (isoFraction: number) => void;
+  iso: IsoData | null;
+  isoStatus: LoadStatus;
+  isoProgress: number;
+  loadIso: () => Promise<void>;
+  tourId: string | null;
+  stepIndex: number;
+  savedState: UrlState | null;
+  applyUrl: (patch: Partial<UrlState>) => void;
+  startTour: (id: string, step?: number) => void;
+  exitTour: () => void;
+  finishTour: () => void;
+  goToStep: (i: number) => void;
+  inviteOpen: boolean;
+  completedTours: string[];
+  dismissInvite: () => void;
 }
 
-const INVALIDATED = {
+export const INVALIDATED = {
   stateInfo: null,
   positions: null,
   density: null,
@@ -166,16 +219,22 @@ const INVALIDATED = {
   error: null,
   plane: null,
   planeStatus: "idle",
+  iso: null,
+  isoStatus: "idle",
+  isoProgress: 0,
   radial: null,
   levels: null,
   spectrum: null,
   hfLevels: null,
+  hfStatus: "idle",
   curveOfGrowth: null,
   absorptionData: null,
   profileZoom: null as [number, number] | null,
   ghost: null,
   ghostStatus: "idle",
 } as const;
+
+const startingMemory = readMemory();
 
 let seedCounter = 1;
 
@@ -205,6 +264,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   colorMode: "solid",
   planeQuantity: "density",
   count: 100000,
+  sheet: "collapsed",
   systems: [],
   stateInfo: null,
   positions: null,
@@ -222,6 +282,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   intensities: true,
   model: "gsz",
   hfLevels: null,
+  hfStatus: "idle",
   config: null,
   exchange: true,
   pauli: true,
@@ -238,10 +299,12 @@ export const useAppStore = create<AppState>()((set, get) => ({
   absorption: false,
   logColumn: 20,
   labConst: { hbar: 1, e: 1, m_e: 1, eps0: 1, c: 1 },
+  labZ: 1,
   whatif: null,
   whatifStatus: "idle",
   ghost: null,
   ghostStatus: "idle",
+  ghostOn: false,
   forcePreset: "powerlaw",
   forceParams: defaultParams("powerlaw"),
   forceL: 0,
@@ -253,6 +316,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
   bField: 0,
   eField: 0,
   hyperfine: false,
+  nucleusMode: "marker",
+  surfaceMode: "cloud",
+  isoFraction: 0.9,
+  iso: null,
+  isoStatus: "idle",
+  isoProgress: 0,
+  tourId: null,
+  stepIndex: 0,
+  savedState: null,
+  inviteOpen: shouldInvite(startingMemory),
+  completedTours: startingMemory.completed,
 
   setQuantumNumbers: (n, l, m) => set({ n, l, m, ...INVALIDATED }),
   setSystem: (system) =>
@@ -270,6 +344,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setColorMode: (colorMode) => set({ colorMode }),
   setPlaneQuantity: (planeQuantity) => set({ planeQuantity, plane: null, planeStatus: "idle" }),
   setCount: (count) => set({ count }),
+  setGhostOn: (ghostOn) => set({ ghostOn }),
+  setSheet: (sheet) => set({ sheet }),
 
   loadSystems: async () => {
     const systems = (await getSystems()).systems;
@@ -297,10 +373,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         seed: seedCounter++ % 1000000,
         basis: s.basis,
         system: s.system,
-        model: s.model,
-        config: s.config,
-        exchange: s.exchange,
-        pauli: s.pauli,
+        ...manyElectronParams(s),
       });
       const meta = await waitMeta(job.id);
       if (meta.kind !== "sample") throw new Error(`unexpected job kind ${(meta as JobMeta).kind}`);
@@ -327,10 +400,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         basis: s.basis,
         system: s.system,
         resolution: 256,
-        model: s.model,
-        config: s.config,
-        exchange: s.exchange,
-        pauli: s.pauli,
+        ...manyElectronParams(s),
       });
       const meta = await waitMeta(job.id);
       if (meta.kind !== "plane") throw new Error(`unexpected job kind ${(meta as JobMeta).kind}`);
@@ -343,9 +413,10 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadRadial: async () => {
     const s = get();
+    const p = manyElectronParams(s);
     set({
       radial: await getRadial(
-        s.n, s.l, s.system, 400, s.model, s.config, s.exchange, s.pauli, s.compare,
+        s.n, s.l, s.system, 400, p.model, p.config, p.exchange, p.pauli, s.compare,
       ),
     });
   },
@@ -358,6 +429,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
         6,
         s.fineStructure,
         undefined,
+        s.config,
         s.dirac,
         s.bField,
         s.eField,
@@ -394,6 +466,86 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setLogColumn: (logColumn) => set({ logColumn, absorptionData: null }),
 
   setFineStructure: (fineStructure) => set({ fineStructure, dirac: false, levels: null }),
+  setNucleusMode: (nucleusMode) => set({ nucleusMode }),
+  setSurfaceMode: (surfaceMode) => set({ surfaceMode, iso: null, isoStatus: "idle", isoProgress: 0 }),
+  setIsoFraction: (isoFraction) => set({ isoFraction, iso: null, isoStatus: "idle", isoProgress: 0 }),
+  loadIso: async () => {
+    if (get().isoStatus === "loading") return;
+    if (!(await get().ensureHF())) return;
+    const s = get();
+    set({ isoStatus: "loading", isoProgress: 0, error: null });
+    try {
+      const job = await createIsoJob({
+        n: s.n,
+        l: s.l,
+        m: s.m,
+        fraction: s.isoFraction,
+        basis: s.basis,
+        system: s.system,
+        ...manyElectronParams(s),
+      });
+      const meta = await waitMeta(job.id);
+      if (meta.kind !== "isosurface") throw new Error(`unexpected job kind ${(meta as JobMeta).kind}`);
+      const [vertices, triangles, phase] = await Promise.all([
+        getChannel(job.id, "vertices"),
+        getIndexChannel(job.id, "triangles"),
+        getChannel(job.id, "phase"),
+      ]);
+      set({ iso: { meta, vertices, triangles, phase }, isoStatus: "ready", isoProgress: 1 });
+    } catch (e) {
+      set({ isoStatus: "error", error: message(e) });
+    }
+  },
+  applyUrl: (patch) =>
+    set((s) => {
+      const next: UrlState = { ...URL_DEFAULTS, ...patch };
+      return {
+        ...tourReset(next, s.systems),
+        tourId: next.tour,
+        stepIndex: next.step,
+        savedState: next.tour
+          ? (s.savedState ?? { ...currentUrlState(s), ghost: s.ghostOn })
+          : null,
+      };
+    }),
+  startTour: (id, step = 0) => {
+    const tour = tourById(id);
+    if (!tour) return;
+    rememberDismissed();
+    set((s) => {
+      const i = clampStep(tour, step);
+      return {
+        ...tourReset(stepState(tour.steps[i]), s.systems),
+        tourId: id,
+        stepIndex: i,
+        inviteOpen: false,
+        savedState: s.savedState ?? { ...currentUrlState(s), ghost: s.ghostOn },
+      };
+    });
+  },
+  goToStep: (i) =>
+    set((s) => {
+      const tour = s.tourId ? tourById(s.tourId) : null;
+      if (!tour) return {};
+      const next = clampStep(tour, i);
+      return { ...tourReset(stepState(tour.steps[next]), s.systems), stepIndex: next };
+    }),
+  exitTour: () =>
+    set((s) => ({
+      ...(s.savedState ? tourReset(s.savedState, s.systems) : {}),
+      tourId: null,
+      stepIndex: 0,
+      savedState: null,
+    })),
+  finishTour: () => {
+    const id = get().tourId;
+    if (id) set({ completedTours: rememberCompleted(id).completed });
+    get().exitTour();
+  },
+  dismissInvite: () => {
+    rememberDismissed();
+    set({ inviteOpen: false });
+  },
   setDirac: (dirac) => set({ dirac, levels: null }),
   setBField: (bField) => set({ bField, levels: null }),
   setEField: (eField) => set({ eField, levels: null }),
@@ -417,11 +569,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loadHF: async () => {
     const s = get();
+    if (s.hfStatus === "loading") return;
     const info = s.systems.find((x) => x.key === s.system);
     if (info === undefined || info.kind !== "screened") {
-      set({ hfLevels: null });
+      set({ hfLevels: null, hfStatus: "idle" });
       return;
     }
+    set({ hfStatus: "loading" });
     try {
       const job = await createHFJob({
         z: info.z,
@@ -430,9 +584,9 @@ export const useAppStore = create<AppState>()((set, get) => ({
         pauli: s.pauli,
       });
       const meta = await waitMeta(job.id);
-      set({ hfLevels: isHFLevels(meta) ? meta : null });
+      set({ hfLevels: isHFLevels(meta) ? meta : null, hfStatus: "ready" });
     } catch {
-      set({ hfLevels: null });
+      set({ hfLevels: null, hfStatus: "error" });
     }
   },
 
@@ -449,13 +603,27 @@ export const useAppStore = create<AppState>()((set, get) => ({
     set({ labConst, whatif: null, whatifStatus: "idle" });
   },
 
+  setLabZ: (labZ) => set({ labZ, whatif: null, whatifStatus: "idle" }),
+
   loadWhatIf: async () => {
-    const s = get();
-    set({ whatifStatus: "loading" });
+    const { labConst, labZ } = get();
+    const sys = `z${labZ}`;
+    set({ whatifStatus: "loading", error: null });
     try {
-      set({ whatif: await getConstants(s.labConst), whatifStatus: "ready" });
-    } catch {
-      set({ whatifStatus: "error" });
+      const report = await getConstants(labConst);
+      const alpha = report.alpha.quantity.value;
+      const real = await getLevels(sys, 6, true);
+      if (isScreenedLevels(real)) throw new Error("what-if expects hydrogenic levels");
+      const alteredRaw =
+        report.altered && isAlphaValid(alpha)
+          ? await getLevels(sys, 6, true, alpha)
+          : null;
+      if (alteredRaw !== null && isScreenedLevels(alteredRaw)) {
+        throw new Error("what-if expects hydrogenic levels");
+      }
+      set({ whatif: { report, real, altered: alteredRaw }, whatifStatus: "ready" });
+    } catch (e) {
+      set({ whatifStatus: "error", error: message(e) });
     }
   },
 

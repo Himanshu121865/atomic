@@ -4,17 +4,22 @@ import { isScreenedLevels } from "../api/client";
 import type {
   FineLevel,
   GrossLevel,
+  HFLevels,
   LevelsResponse,
+  PauliCollapse,
   ScreenedLevels,
 } from "../api/types";
+import { HF_LADDER_AXIS_LIBERTY } from "../lib/liberties";
+import { plotHeight, usePlotWidth } from "../lib/plotSize";
+import { withinView } from "../lib/zoom";
 import { useAppStore } from "../state/store";
 import { Badge } from "./Badge";
 import { ControlGroup, Slider, Toggle } from "./Field";
 import { Disclosure } from "./Disclosure";
+import { OffWindowMarks, usePlotZoom, ZoomControls } from "./PlotZoom";
 import { ViewIntro } from "./ViewIntro";
 
-const W = 680;
-const H = 460;
+const SHAPE = { floor: 560, ratio: 0.676, min: 380, max: 560 };
 
 const HARTREE_UEV = 27.211386245988e6;
 const MU_B_UEV_PER_T = (0.5 / 2.35051756758e5) * HARTREE_UEV;
@@ -24,12 +29,15 @@ export function LevelsLadder({
   activeN,
   maxL,
   onPick,
+  width: W = 680,
 }: {
   levels: LevelsResponse;
   activeN: number;
   maxL: number;
   onPick: (n: number, l: number) => void;
+  width?: number;
 }) {
+  const H = plotHeight(W, SHAPE.ratio, SHAPE.min, SHAPE.max);
   const es = levels.gross.map((g) => g.energy_ev.value);
   const eMin = Math.min(...es);
   const y = scaleLinear([eMin, 0], [H - 40, 24]);
@@ -38,7 +46,7 @@ export function LevelsLadder({
   let lastLabelY = Number.POSITIVE_INFINITY;
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" className="levels-svg">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }} role="img" className="levels-svg">
       <line x1={rungX1} x2={rungX2} y1={y(0)} y2={y(0)} className="zero" />
       <text x={rungX2 + 30} y={y(0)} dy="0.32em" className="tick">
         0: ionization limit
@@ -185,7 +193,11 @@ export function StarkFan({ gross, eField }: { gross: GrossLevel; eField: number 
   );
 }
 
-export function ScreenedLadder({ levels }: { levels: ScreenedLevels }) {
+export function ScreenedLadder({ levels, width: W = 680 }: {
+  levels: ScreenedLevels;
+  width?: number;
+}) {
+  const H = plotHeight(W, SHAPE.ratio, SHAPE.min, SHAPE.max);
   const es = levels.orbitals.map((o) => o.energy_ev.value);
   const eMin = Math.min(...es);
   const y = scaleLinear([eMin, 0], [H - 40, 24]);
@@ -193,7 +205,7 @@ export function ScreenedLadder({ levels }: { levels: ScreenedLevels }) {
   const rungX2 = 340;
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" className="levels-svg">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }} role="img" className="levels-svg">
       <line x1={rungX1} x2={rungX2} y1={y(0)} y2={y(0)} className="zero" />
       <text x={rungX2 + 30} y={y(0)} dy="0.32em" className="tick">
         0: ionization limit
@@ -228,6 +240,203 @@ export function ScreenedLadder({ levels }: { levels: ScreenedLevels }) {
   );
 }
 
+export function PauliComparison({ collapse }: { collapse: PauliCollapse }) {
+  const gained = Math.abs(collapse.binding_change_ev.value);
+  const noop = collapse.binding_change_ev.value === 0;
+  const shrink = collapse.radius_ratio.value;
+  return (
+    <>
+      <p className="caption">
+        <strong>
+          {noop
+            ? "The exclusion principle costs this atom nothing"
+            : `The exclusion principle costs this atom ${gained.toPrecision(4)} eV of binding`}
+        </strong>{" "}
+        {noop ? (
+          <>
+            , its ground configuration is already 1s
+            <sup>{2}</sup>, so lifting the cap lifts nothing. Helium is the
+            calibration case here, not the demonstration: the two solves agree
+            to the last bit because they are the same solve.
+          </>
+        ) : (
+          <>
+            , the real atom ({collapse.real_config}) sits at{" "}
+            {collapse.real_total_energy_ev.value.toPrecision(6)} eV and the
+            collapsed one at{" "}
+            {(collapse.real_total_energy_ev.value + collapse.binding_change_ev.value)
+              .toPrecision(6)}{" "}
+            eV, both on the same mesh. Drop the cap and nothing holds the
+            electrons out of the deep well.
+          </>
+        )}
+      </p>
+      <p className="caption">
+        <strong>And it is what makes the atom big.</strong> ⟨r⟩ falls from{" "}
+        {collapse.real_radius.value.toFixed(3)} to{" "}
+        {collapse.collapsed_radius.value.toFixed(3)} bohr, a factor of{" "}
+        {shrink.toFixed(3)}. With the cap on, atomic size rises and falls across
+        a period, and that rise and fall is the periodic table. With it off, ⟨r⟩
+        just shrinks forever as Z grows: every element a smaller copy of the
+        last one, and no chemistry left to do.
+      </p>
+      <Disclosure summary="Checked against a closed form, not only against itself">
+        <p className="caption">
+          N electrons in a single 1s of exponent ζ minimize at ζ* ={" "}
+          {collapse.variational_zeta.value.toFixed(4)}, giving{" "}
+          {collapse.variational_energy_ev.value.toPrecision(6)} eV. The solve
+          above optimizes the whole radial function rather than one exponent, so
+          it searches a bigger space and has to land at or below that number.
+          It does. The formula is textbook: at Z = N = 2 it is the variational
+          helium result.
+        </p>
+      </Disclosure>
+    </>
+  );
+}
+
+export function HFLadder({ levels, width: W = 680 }: {
+  levels: HFLevels;
+  width?: number;
+}) {
+  const H = plotHeight(W, SHAPE.ratio, SHAPE.min, SHAPE.max);
+  const orbitals = levels.orbitals;
+  const bind = orbitals.map((o) => Math.abs(o.energy_ev.value));
+  const deepest = Math.max(...bind);
+  const shallowest = Math.min(...bind.filter((b) => b > 0), deepest);
+  const yRange: [number, number] = [40, H - 40];
+  const yFull: [number, number] = [Math.log10(shallowest) - 0.25, Math.log10(deepest)];
+  const zoom = usePlotZoom({ width: W, height: H, y: { domain: yFull, range: yRange } });
+  const y = scaleLinear(zoom.y, yRange);
+  const shown = withinView(orbitals, (o) => Math.log10(Math.abs(o.energy_ev.value)), zoom.y);
+  const rungX1 = 100;
+  const rungX2 = 360;
+  const virial = levels.virial_ratio.value;
+  const modelName = !levels.pauli
+    ? "No Pauli exclusion (1s^N)"
+    : levels.exchange
+      ? "Hartree-Fock"
+      : "Hartree (no exchange)";
+  return (
+    <div className="view-wrap">
+      <ViewIntro
+        lead={{
+          title: `Energy levels: ${modelName}`,
+          lead:
+            "Each rung is one subshell, solved self-consistently: every electron " +
+            "moves in the field of all the others, and the answer has to " +
+            "reproduce itself.",
+          notice:
+            "The 1s sits more than two decades below the valence shell, so the " +
+            "axis is logarithmic in binding energy. Deeper means further down.",
+        }}
+        badge={<Badge provenance={levels.provenance} />}
+      >
+        <p className="view-intro-config">
+          {levels.symbol ?? `Z=${levels.z}`} {levels.config}
+          {levels.is_ground
+            ? levels.pauli
+              ? " · ground configuration"
+              : " · ground, with no cap left to obey"
+            : " · excited, not the ground state"}
+        </p>
+      </ViewIntro>
+      <svg
+        viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }}
+        role="img"
+        className={`levels-svg plot-zoomable${zoom.dragging ? " plot-panning" : ""}`}
+        ref={zoom.ref}
+        {...zoom.handlers}
+      >
+        {}
+        <text x={rungX1} y={16} className="tick" opacity={0.7}>
+          ↑ 0 eV (ionization limit), off the top of a log axis
+        </text>
+        <OffWindowMarks
+          above={orbitals.filter(
+            (o) => Math.log10(Math.abs(o.energy_ev.value)) < Math.min(...zoom.y),
+          ).length}
+          below={orbitals.filter(
+            (o) => Math.log10(Math.abs(o.energy_ev.value)) > Math.max(...zoom.y),
+          ).length}
+          x={rungX1} top={30} bottom={H - 14} noun="subshell"
+        />
+        {shown.map((o) => {
+          const e = o.energy_ev.value;
+          const yr = y(Math.log10(Math.abs(e)));
+          return (
+            <g key={`${o.n}-${o.l}`}>
+              <line
+                x1={rungX1} x2={rungX2} y1={yr} y2={yr}
+                className="rung" strokeWidth={3}
+              />
+              <text x={rungX1 - 8} y={yr} dy="0.32em" textAnchor="end" className="tick">
+                {o.label}
+                <tspan dy="-0.5em">{o.occupancy}</tspan>
+              </text>
+              <text x={rungX2 + 8} y={yr} dy="0.32em" className="tick">
+                {}
+                {e.toPrecision(4)} eV
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      <ZoomControls zoom={zoom} what="the binding-energy axis" />
+      <p className="caption">
+        Total energy {levels.total_energy_ev.value.toFixed(2)} eV
+        {levels.exchange
+          ? ", and it is variational: the real atom sits at or below it."
+          : ", stationary for this model, but not a bound on the real atom."}{" "}
+        <Badge provenance={HF_LADDER_AXIS_LIBERTY} />
+      </p>
+      {!levels.exchange && levels.exchange_energy_ev !== null && (
+        <p className="caption">
+          <strong>
+            Exchange is worth{" "}
+            {Math.abs(levels.exchange_energy_ev.value).toFixed(2)} eV of binding
+          </strong>{" "}
+          to this atom: the gap between the energy above and the Hartree-Fock
+          one, both solved on the same mesh. Exchange binds because same-spin
+          electrons keep out of each other's way, so they repel each other less
+          than distinguishable ones would.{" "}
+          {levels.exchange_energy_ev.value === 0
+            ? "Zero here, and that is the answer rather than a missing number: no two electrons in this configuration share a spin, so there is no pair to exchange."
+            : "The Pauli occupancies are untouched, so nothing has piled into the 1s."}
+        </p>
+      )}
+      {levels.collapse !== null && <PauliComparison collapse={levels.collapse} />}
+      <Disclosure summary="What this model leaves out, and why the axis is logarithmic">
+        <p className="caption">
+          These are self-consistent-field orbital energies (
+          {levels.exchange
+            ? "APPROXIMATION, and the badge lists what Hartree-Fock leaves out, correlation above all"
+            : "COUNTERFACTUAL, see the badge; this is not an approximation to the real atom"}
+          ). The energy axis is logarithmic in binding energy{" "}
+          <Badge provenance={HF_LADDER_AXIS_LIBERTY} /> because the 1s and the
+          valence shell differ by more than two decades. The total above,{" "}
+          {levels.total_energy_ev.value.toFixed(2)} eV,
+          {levels.exchange
+            ? " is variational, unlike the screened model's sum of orbital energies."
+            : " is stationary for this model, but it is not a variational bound on the real atom: a product wavefunction is not antisymmetric, so it is not an admissible trial function for electrons, and the theorem simply does not apply to it."}
+        </p>
+      </Disclosure>
+      <Disclosure summary="Solve diagnostics: how well the computation converged">
+        <p className="caption">
+          <strong>These describe the computation, not the atom</strong>{" "}
+          (NUMERICAL): the solve{" "}
+          {levels.converged ? "converged" : "DID NOT CONVERGE"} in{" "}
+          {levels.coarse_iterations} coarse + {levels.iterations} fine SCF
+          iterations on {levels.grid_points} radial points. The virial ratio
+          −〈V〉/〈T〉 = {virial.toFixed(6)}, which is exactly 2 for a converged
+          solution of this Hamiltonian. How far it sits from 2 measures the
+          grid, not the element.
+        </p>
+      </Disclosure>
+    </div>
+  );
+}
+
 export function LevelsView() {
   const {
     n, l, system, levels,
@@ -237,14 +446,40 @@ export function LevelsView() {
     bField, setBField,
     eField, setEField,
     hyperfine, setHyperfine,
+    model, config, exchange, pauli, hfLevels, hfStatus, loadHF, error,
   } = useAppStore();
   useEffect(() => {
     void loadLevels();
-  }, [system, fineStructure, dirac, bField, eField, hyperfine, loadLevels]);
+  }, [system, config, fineStructure, dirac, bField, eField, hyperfine, loadLevels]);
+  const wantHF = model === "hf";
+  useEffect(() => {
+    if (wantHF && hfLevels === null && hfStatus === "idle") void loadHF();
+  }, [wantHF, hfLevels, hfStatus, system, config, exchange, pauli, loadHF]);
+  const { width: W, ref: wrapRef } = usePlotWidth(SHAPE.floor);
+
+  if (wantHF) {
+    if (hfStatus === "error") {
+      return (
+        <div className="view-wrap" ref={wrapRef}>
+          <p className="hint-block">
+            Hartree-Fock could not solve this atom: {error ?? "unknown reason"}
+          </p>
+        </div>
+      );
+    }
+    if (hfLevels === null) {
+      return (
+        <div className="view-wrap" ref={wrapRef}>
+          <p className="hint-block">Solving Hartree-Fock, this takes a few seconds…</p>
+        </div>
+      );
+    }
+    return <HFLadder levels={hfLevels} width={W} />;
+  }
 
   if (!levels) {
     return (
-      <div className="view-wrap">
+      <div className="view-wrap" ref={wrapRef}>
         <p className="hint-block">Loading the levels…</p>
       </div>
     );
@@ -252,7 +487,7 @@ export function LevelsView() {
 
   if (isScreenedLevels(levels)) {
     return (
-      <div className="view-wrap">
+      <div className="view-wrap" ref={wrapRef}>
         <ViewIntro
           lead={{
             title: `Energy levels of ${levels.system.name}`,
@@ -267,7 +502,7 @@ export function LevelsView() {
             {levels.is_ground ? " · ground configuration" : " · excited, not the ground state"}
           </p>
         </ViewIntro>
-        <ScreenedLadder levels={levels} />
+        <ScreenedLadder levels={levels} width={W} />
         <p className="caption">
           Total energy {levels.total_energy_ev.value.toFixed(2)} eV.
         </p>
@@ -280,7 +515,7 @@ export function LevelsView() {
   const hfShell = levels.hyperfine_shells?.find((s) => s.n === 1);
 
   return (
-    <div className="view-wrap">
+    <div className="view-wrap" ref={wrapRef}>
       <ViewIntro
         lead={{
           title: `Energy levels of ${levels.system.name}`,
@@ -293,17 +528,21 @@ export function LevelsView() {
         badge={<Badge provenance={levels.gross[0].energy.provenance} />}
       />
       <ControlGroup title="Level detail">
-        <Toggle
-          label="fine structure (α²)"
-          checked={fineStructure}
-          onChange={setFineStructure}
-        />
-        {fineStructure && (
+        <div data-tour="fine-structure">
           <Toggle
-            label="Dirac exact (instead of α² perturbative)"
-            checked={dirac}
-            onChange={setDirac}
+            label="fine structure (α²)"
+            checked={fineStructure}
+            onChange={setFineStructure}
           />
+        </div>
+        {fineStructure && (
+          <div data-tour="dirac-toggle">
+            <Toggle
+              label="Dirac exact (instead of α² perturbative)"
+              checked={dirac}
+              onChange={setDirac}
+            />
+          </div>
         )}
         {fineStructure && (
           <Slider
@@ -342,6 +581,7 @@ export function LevelsView() {
         activeN={n}
         maxL={l}
         onPick={(nn, ll) => setQuantumNumbers(nn, ll, 0)}
+        width={W}
       />
       {fineStructure && fineForN.length > 0 && bField <= 0 && (
         <FineFan

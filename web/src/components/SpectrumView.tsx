@@ -17,6 +17,7 @@ import {
   SPECTRUM_PROFILE_LIBERTY,
 } from "../lib/liberties";
 import { seriesColor, seriesName } from "../lib/spectrum";
+import { plotHeight, usePlotWidth } from "../lib/plotSize";
 import { useAppStore } from "../state/store";
 import { Notation, mathTspans } from "../lib/mathText";
 import { Badge } from "./Badge";
@@ -28,15 +29,15 @@ import { HoverReadout, usePlotHover } from "./PlotHover";
 import { usePlotZoom, ZoomControls } from "./PlotZoom";
 import { ViewIntro } from "./ViewIntro";
 
-const W = 680;
-const LINES_H = 206;
-const RES_H = 168;
+const SHAPE = {
+  floor: 420,
+  lines: { ratio: 0.303, min: 190, max: 260 },
+  residual: { ratio: 0.247, min: 150, max: 210 },
+  zoom: { ratio: 0.309, min: 190, max: 260 },
+};
 const M = { left: 56, right: 16 };
 
 const TOP = 28;
-const BOTTOM = 160;
-const AXIS_Y = 166;
-const DOT_Y = 163;
 
 export type BarQuantity = "rate" | "emissivity";
 
@@ -161,8 +162,7 @@ export function wavelengthWindow(lines: SpectralLineInfo[], full: boolean) {
   };
 }
 
-const ZOOM_H = 210;
-const ZOOM_BASE = ZOOM_H - 40;
+
 
 export function residualUnit(tol: number): { scale: number; label: string } {
   if (tol < 1e-3) return { scale: 1e6, label: "parts per million" };
@@ -171,13 +171,17 @@ export function residualUnit(tol: number): { scale: number; label: string } {
 
 function ZoomPanel({
   prof,
+  width: W,
   window_,
   onClear,
 }: {
   prof: ProfileInfo;
+  width: number;
   window_: [number, number];
   onClear: () => void;
 }) {
+  const ZOOM_H = plotHeight(W, SHAPE.zoom.ratio, SHAPE.zoom.min, SHAPE.zoom.max);
+  const ZOOM_BASE = ZOOM_H - 40;
   const w = prof.widths.length > 0 ? prof.widths[0] : null;
   const max = Math.max(...prof.intensity, 0);
   const x = scaleLinear(window_, [M.left, W - M.right]);
@@ -203,7 +207,7 @@ function ZoomPanel({
         pixel on an axis covering hundreds of nanometres.{" "}
         <Badge provenance={prof.provenance} />
       </p>
-      <svg viewBox={`0 0 ${W} ${ZOOM_H}`} role="img" className="levels-svg">
+      <svg viewBox={`0 0 ${W} ${ZOOM_H}`} style={{ minWidth: W }} role="img" className="levels-svg">
         <line
           x1={M.left} x2={W - M.right} y1={ZOOM_BASE} y2={ZOOM_BASE}
           className="axis"
@@ -314,6 +318,12 @@ export function SpectrumView() {
   }, [absorption, thermal, logColumn, system, fineStructure, temperatureK,
       logNe, logResolvingPower, profileZoom, loadAbsorption]);
 
+  const { width: W, compact, ref: wrapRef } = usePlotWidth(SHAPE.floor);
+  const LINES_H = plotHeight(W, SHAPE.lines.ratio, SHAPE.lines.min, SHAPE.lines.max);
+  const BOTTOM = LINES_H - 46;
+  const AXIS_Y = LINES_H - 40;
+  const DOT_Y = LINES_H - 43;
+  const RES_H = plotHeight(W, SHAPE.residual.ratio, SHAPE.residual.min, SHAPE.residual.max);
   const window_ = spectrum ? wavelengthWindow(spectrum.lines, fullRange) : null;
   const xRange: [number, number] = [M.left, W - M.right];
   const xFull: [number, number] = window_
@@ -328,7 +338,7 @@ export function SpectrumView() {
 
   if (!spectrum || !window_) {
     return (
-      <div className="view-wrap">
+      <div className="view-wrap" ref={wrapRef}>
         <ViewIntro lead={VIEW_LEADS.spectrum} />
         <p className="hint-block">Loading the spectrum…</p>
       </div>
@@ -404,7 +414,7 @@ export function SpectrumView() {
     : [];
 
   return (
-    <div className="view-wrap">
+    <div className="view-wrap" ref={wrapRef}>
       <ViewIntro
         lead={VIEW_LEADS.spectrum}
         badge={<Badge provenance={spectrum.lines[0].wavelength_nm.provenance} />}
@@ -457,7 +467,7 @@ export function SpectrumView() {
           </span>
         </figcaption>
         <svg
-          viewBox={`0 0 ${W} ${LINES_H}`}
+          viewBox={`0 0 ${W} ${LINES_H}`} style={{ minWidth: W }}
           role="img"
           className={
             `levels-svg plot-zoomable${prof ? " plot-hoverable" : ""}` +
@@ -525,7 +535,11 @@ export function SpectrumView() {
             wavelength [nm] (log)
           </text>
           <text x={W - M.right} y={16} textAnchor="end" className="tick">
-            bars: computed · dots on the axis: measured by NIST
+            {
+}
+            {compact
+              ? "bars: computed · dots: NIST"
+              : "bars: computed · dots on the axis: measured by NIST"}
           </text>
           {hoverLine && (
             <HoverReadout
@@ -553,7 +567,7 @@ export function SpectrumView() {
           {yRes && tol && (
             <>
             <svg
-              viewBox={`0 0 ${W} ${RES_H}`}
+              viewBox={`0 0 ${W} ${RES_H}`} style={{ minWidth: W }}
               role="img"
               className={`levels-svg plot-zoomable${zoom.dragging ? " plot-panning" : ""}`}
               ref={zoom.follower}
@@ -613,8 +627,12 @@ export function SpectrumView() {
               ))}
               </g>
               <text x={M.left} y={12} className="tick">
+                {
+}
                 {mathTspans(
-                  `(λ_computed − λ_NIST)/λ_NIST, shaded band = the stated tolerance, ±${tol.toExponential(0)}`,
+                  compact
+                    ? `(λ_computed − λ_NIST)/λ_NIST · band ±${tol.toExponential(0)}`
+                    : `(λ_computed − λ_NIST)/λ_NIST, shaded band = the stated tolerance, ±${tol.toExponential(0)}`,
                 )}
               </text>
               <text
@@ -646,6 +664,7 @@ export function SpectrumView() {
         </p>
       )}
 
+      <div data-tour="spectrum-options">
       <ControlGroup
         title="How bright is each line"
         hint="By default every bar is the same height, because brightness is not modelled at all. These controls add it, one layer at a time."
@@ -711,6 +730,7 @@ export function SpectrumView() {
           </>
         )}
       </ControlGroup>
+      </div>
 
       <ControlGroup
         title="What shape is a line"
@@ -779,6 +799,7 @@ export function SpectrumView() {
 
       {prof && profileZoom && (
         <ZoomPanel
+          width={W}
           prof={prof}
           window_={profileZoom}
           onClear={() => {
@@ -789,23 +810,25 @@ export function SpectrumView() {
       )}
 
       {prof && profileZoom && (
-        <ControlGroup
-          title="What happens with more gas in the way"
-          tone={showCurveOfGrowth ? "active" : "plain"}
-        >
-          <Toggle
-            label="Curve of growth"
-            checked={showCurveOfGrowth}
-            onChange={setShowCurveOfGrowth}
-            why="A line cannot keep getting stronger forever. Pile up enough atoms and the core saturates, and only the wings keep growing."
-          />
-          {showCurveOfGrowth && !curveOfGrowth && (
-            <p className="hint-block">Computing the curve of growth…</p>
-          )}
-        </ControlGroup>
+        <div data-tour="curve-of-growth-toggle">
+          <ControlGroup
+            title="What happens with more gas in the way"
+            tone={showCurveOfGrowth ? "active" : "plain"}
+          >
+            <Toggle
+              label="Curve of growth"
+              checked={showCurveOfGrowth}
+              onChange={setShowCurveOfGrowth}
+              why="A line cannot keep getting stronger forever. Pile up enough atoms and the core saturates, and only the wings keep growing."
+            />
+            {showCurveOfGrowth && !curveOfGrowth && (
+              <p className="hint-block">Computing the curve of growth…</p>
+            )}
+          </ControlGroup>
+        </div>
       )}
       {prof && profileZoom && showCurveOfGrowth && curveOfGrowth && (
-        <CurveOfGrowthView cog={curveOfGrowth} />
+        <CurveOfGrowthView cog={curveOfGrowth} width={W} />
       )}
 
       <ControlGroup
@@ -835,7 +858,7 @@ export function SpectrumView() {
       </ControlGroup>
       {absorption && thermal &&
         (absorptionData ? (
-          <AbsorptionView abs={absorptionData} zoomed={profileZoom !== null} />
+          <AbsorptionView abs={absorptionData} width={W} zoomed={profileZoom !== null} />
         ) : (
           <p className="hint-block">Computing the absorption spectrum…</p>
         ))}

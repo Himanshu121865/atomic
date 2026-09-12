@@ -1,37 +1,26 @@
 import { describe, expect, it } from "vitest";
+import { INFERNO, RDBU_R } from "./luts";
 import { rasterize } from "./rasterize";
 
 describe("rasterize", () => {
-  it("paints density with an opaque inferno ramp", () => {
-    const values = new Float32Array([0, 0.5, 0.5, 1]);
-    const { data, width, height } = rasterize(values, 2, "density");
-    expect(width).toBe(2);
-    expect(height).toBe(2);
-    expect(data).toHaveLength(16);
-    for (let i = 3; i < 16; i += 4) expect(data[i]).toBe(255);
-    const peak = 1 * 4;
-    const flat = 2 * 4;
-    expect(data[peak] + data[peak + 1] + data[peak + 2]).toBeGreaterThan(
-      data[flat] + data[flat + 1] + data[flat + 2],
-    );
+  it("maps density extremes through inferno and flips rows (+z up)", () => {
+    const values = new Float32Array([0, 0.5, 1, 2]);
+    const px = rasterize(values, 2, "density");
+    expect(px).toHaveLength(16);
+    const top = INFERNO[255];
+    expect([px[4], px[5], px[6], px[7]]).toEqual([top[0], top[1], top[2], 255]);
+    const zero = INFERNO[0];
+    expect([px[8], px[9], px[10], px[11]]).toEqual([zero[0], zero[1], zero[2], 255]);
   });
 
-  it("flips rows so +z is up", () => {
-    const values = new Float32Array([1, 0, 0, 0]);
-    const { data } = rasterize(values, 2, "density");
-    const topLeft = 0 * 4;
-    const bottomLeft = 2 * 4;
-    const topSum = data[topLeft] + data[topLeft + 1] + data[topLeft + 2];
-    const bottomSum = data[bottomLeft] + data[bottomLeft + 1] + data[bottomLeft + 2];
-    expect(bottomSum).toBeGreaterThan(topSum);
-  });
-
-  it("paints psi by sign", () => {
-    const values = new Float32Array([1, -1, 0.5, -0.5]);
-    const { data } = rasterize(values, 2, "psi");
-    const pos = 0 * 4;
-    const neg = 1 * 4;
-    expect(data[pos]).toBeGreaterThan(data[pos + 2]);
-    expect(data[neg + 2]).toBeGreaterThan(data[neg]);
+  it("maps signed psi through diverging RdBu_r with zero at the midpoint", () => {
+    const values = new Float32Array([-2, 0, 2, 1]);
+    const px = rasterize(values, 2, "psi");
+    const pos = RDBU_R[255];
+    expect([px[0], px[1], px[2]]).toEqual([pos[0], pos[1], pos[2]]);
+    const neg = RDBU_R[0];
+    expect([px[8], px[9], px[10]]).toEqual([neg[0], neg[1], neg[2]]);
+    const mid = RDBU_R[128];
+    expect([px[12], px[13], px[14]]).toEqual([mid[0], mid[1], mid[2]]);
   });
 });

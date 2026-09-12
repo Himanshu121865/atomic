@@ -1,10 +1,10 @@
 import { scaleLinear } from "d3-scale";
 import type { CurveOfGrowthInfo, GrowthRegime } from "../api/types";
 import { Notation } from "../lib/mathText";
+import { plotHeight } from "../lib/plotSize";
 import { Badge } from "./Badge";
 
-const W = 680;
-const H = 260;
+const SHAPE = { ratio: 0.382, min: 220, max: 310 };
 const M = { left: 62, right: 16, top: 20, bottom: 34 };
 
 export const REGIME_COLOR: Record<GrowthRegime, string> = {
@@ -69,7 +69,14 @@ export function decadeTicks(lo: number, hi: number, max = 8): number[] {
   return all.filter((_, i) => i % step === 0);
 }
 
-export function CurveOfGrowthView({ cog }: { cog: CurveOfGrowthInfo }) {
+export function CurveOfGrowthView({
+  cog,
+  width: W,
+}: {
+  cog: CurveOfGrowthInfo;
+  width: number;
+}) {
+  const H = plotHeight(W, SHAPE.ratio, SHAPE.min, SHAPE.max);
   const logN = logDomain(cog.column_density_m2);
   const logW = logDomain(cog.equivalent_width_nm);
   const x = scaleLinear(logN, [M.left, W - M.right]);
@@ -93,7 +100,7 @@ export function CurveOfGrowthView({ cog }: { cog: CurveOfGrowthInfo }) {
           ))}
         </span>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" className="levels-svg">
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }} role="img" className="levels-svg">
         <line
           x1={M.left} x2={W - M.right} y1={H - M.bottom} y2={H - M.bottom}
           className="axis"

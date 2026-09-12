@@ -15,7 +15,7 @@ export function InfoPanel() {
 
   if (screened && sys) {
     return (
-      <div className="info-panel">
+      <div className="info-panel" data-tour="state-card">
         <h3>
           {sys.name} <span className="info-formula">{stateLabel(n, l, m)}</span>
         </h3>
@@ -49,14 +49,14 @@ export function InfoPanel() {
 
   if (!stateInfo) {
     return (
-      <div className="info-panel">
+      <div className="info-panel" data-tour="state-card">
         <p className="hint-block">Loading the state…</p>
       </div>
     );
   }
 
   return (
-    <div className="info-panel">
+    <div className="info-panel" data-tour="state-card">
       <h3>
         {stateInfo.system.name} {n}
         {["s", "p", "d", "f", "g", "h"][l] ?? `l=${l}`}

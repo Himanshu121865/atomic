@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, RefObject } from "react";
+import { isTouch } from "../lib/viewport";
 import { isZoomed, panView, zoomFactor, zoomView, type Domain } from "../lib/zoom";
 
 export type ZoomAxis = {
@@ -33,6 +34,10 @@ const WHEEL_OUT = 1.18;
 const DRAG_SLOP = 3;
 
 const FULL: [number, number] = [0, 1];
+
+export function startsPan(e: { button: number; pointerType: string }): boolean {
+  return e.button === 0 && e.pointerType !== "touch";
+}
 
 export function usePlotZoom(spec: {
   width: number;
@@ -115,7 +120,7 @@ export function usePlotZoom(spec: {
   const drag = useRef<{ id: number; cx: number; cy: number; moved: boolean } | null>(null);
 
   const onPointerDown = useCallback((e: ReactPointerEvent<SVGSVGElement>) => {
-    if (e.button !== 0) return;
+    if (!startsPan(e)) return;
     drag.current = { id: e.pointerId, cx: e.clientX, cy: e.clientY, moved: false };
   }, []);
 
@@ -239,6 +244,8 @@ export function ZoomControls({
           <>
             <strong>{zoom.factor.toFixed(1)}×</strong> on {what}
           </>
+        ) : isTouch() ? (
+          <>use + and − to zoom {what}</>
         ) : (
           <>scroll to zoom {what}, drag to pan, double-click to reset</>
         )}

@@ -1,9 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { isScreenedLevels } from "../api/client";
-import type { Provenance, ScreenedLevels, SystemInfo } from "../api/types";
+import type { HFLevels, Provenance, ScreenedLevels, SystemInfo } from "../api/types";
 import { useAppStore } from "../state/store";
-import { FineFan, LevelsLadder, LevelsView, ScreenedLadder, ZeemanFan } from "./LevelsView";
+import { FineFan, HFLadder, LevelsLadder, LevelsView, ScreenedLadder, ZeemanFan } from "./LevelsView";
 
 const PROV: Provenance = {
   fidelity: "exact",
@@ -160,4 +160,84 @@ describe("ScreenedLadder", () => {
     };
     expect(isScreenedLevels(hydrogenic)).toBe(false);
   });
+});
+
+describe("HFLadder", () => {
+  const hartree: HFLevels = {
+    kind: "hf",
+    z: 4,
+    n_electrons: 4,
+    symbol: "Be",
+    config: "1s2 2s2",
+    is_ground: true,
+    exchange: false,
+    exchange_energy: qty(-1.74),
+    exchange_energy_ev: qty(-47.3),
+    pauli: true,
+    collapse: null,
+    orbitals: [
+      { n: 1, l: 0, label: "1s", occupancy: 2, energy: qty(-128), energy_ev: qty(-128), channel: "P_1s" },
+      { n: 2, l: 0, label: "2s", occupancy: 2, energy: qty(-9), energy_ev: qty(-9), channel: "P_2s" },
+    ],
+    total_energy: qty(-14),
+    total_energy_ev: qty(-380),
+    kinetic: qty(14),
+    potential: qty(-28),
+    virial_ratio: qty(2),
+    iterations: 3,
+    coarse_iterations: 12,
+    converged: true,
+    provenance: { ...PROV, fidelity: "counterfactual" },
+    grid_channel: "grid",
+    grid_points: 1400,
+    channels: [],
+  };
+
+  it("draws one rung per subshell with a log-axis disclosure", () => {
+    const html = renderToStaticMarkup(<HFLadder levels={hartree} />);
+    expect(html).toContain("Energy levels: Hartree (no exchange)");
+    expect(html).toContain("1s2 2s2");
+    expect(html).toContain("ionization limit");
+    expect(html).toContain("stationary for this model");
+  });
+
+  it("states the exchange energy instead of omitting it", () => {
+    const html = renderToStaticMarkup(<HFLadder levels={hartree} />);
+    expect(html).toContain("Exchange is worth");
+    expect(html).toContain("47.30 eV of binding");
+  });
+
+  it("names the real model when exchange is on", () => {
+    const html = renderToStaticMarkup(
+      <HFLadder levels={{ ...hartree, exchange: true, exchange_energy: null, exchange_energy_ev: null }} />,
+    );
+    expect(html).toContain("Energy levels: Hartree-Fock");
+    expect(html).toContain("variational");
+  });
+
+  it("compares the collapsed atom against the real one", () => {
+    const collapsed: HFLevels = {
+      ...hartree,
+      pauli: false,
+      config: "1s4",
+      collapse: {
+        binding_change: qty(-100),
+        binding_change_ev: qty(-2721),
+        real_total_energy: qty(-14),
+        real_total_energy_ev: qty(-380),
+        real_config: "1s2 2s2",
+        real_radius: qty(1.5),
+        collapsed_radius: qty(0.5),
+        radius_ratio: qty(1 / 3),
+        variational_zeta: qty(3.4),
+        variational_energy: qty(-90),
+        variational_energy_ev: qty(-2449),
+      },
+    };
+    const html = renderToStaticMarkup(<HFLadder levels={collapsed} />);
+    expect(html).toContain("No Pauli exclusion (1s^N)");
+    expect(html).toContain("exclusion principle costs this atom");
+    expect(html).toContain("makes the atom big");
+  });
+
 });

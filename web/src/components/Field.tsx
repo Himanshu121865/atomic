@@ -1,5 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Notation } from "../lib/mathText";
+import { isNarrow } from "../lib/viewport";
 
 export function ControlGroup({
   title,
@@ -12,12 +13,14 @@ export function ControlGroup({
   tone?: "plain" | "active";
   children: ReactNode;
 }) {
+  const open =
+    typeof window === "undefined" ? true : !isNarrow(window.innerWidth);
   return (
-    <fieldset className={`control-group control-group-${tone}`}>
-      <legend>{title}</legend>
+    <details className={`control-group control-group-${tone}`} open={open}>
+      <summary className="control-group-title">{title}</summary>
       {hint !== undefined && <p className="control-hint">{hint}</p>}
       {children}
-    </fieldset>
+    </details>
   );
 }
 

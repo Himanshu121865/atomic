@@ -18,14 +18,16 @@ export function PlaneView() {
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas || !plane) return;
-    const { data, width, height } = rasterize(
-      plane.values, plane.meta.resolution, plane.meta.quantity,
-    );
-    canvas.width = width;
-    canvas.height = height;
+    const { resolution, quantity } = plane.meta;
+    canvas.width = resolution;
+    canvas.height = resolution;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(data), width, height), 0, 0);
+    ctx.putImageData(
+      new ImageData(rasterize(plane.values, resolution, quantity), resolution, resolution),
+      0,
+      0,
+    );
   }, [plane]);
 
   if (planeStatus === "error" || !plane) {

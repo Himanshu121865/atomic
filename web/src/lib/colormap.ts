@@ -1,50 +1,59 @@
-type RGB = [number, number, number];
+import type { Lut } from "./luts";
 
-const INFERNO: [number, RGB][] = [
-  [0.0, [0, 0, 4]],
-  [0.13, [31, 12, 72]],
-  [0.25, [85, 15, 109]],
-  [0.38, [136, 34, 106]],
-  [0.5, [186, 54, 85]],
-  [0.63, [227, 89, 51]],
-  [0.75, [249, 140, 10]],
-  [0.88, [249, 201, 50]],
-  [1.0, [252, 255, 164]],
-];
-
-const BLUE: RGB = [59, 76, 192];
-const RED: RGB = [180, 40, 40];
-
-function clamp01(t: number): number {
-  return Math.min(1, Math.max(0, t));
+export function lutColor(lut: Lut, t: number): readonly [number, number, number] {
+  const clamped = Math.min(1, Math.max(0, t));
+  return lut[Math.min(lut.length - 1, Math.floor(clamped * lut.length))];
 }
 
-function lerp(a: RGB, b: RGB, t: number): RGB {
-  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+export const DENSITY_GAMMA = 0.5;
+
+export function densityT(value: number, vmax: number): number {
+  if (vmax <= 0) return 0;
+  const clamped = Math.min(Math.max(value, 0), vmax);
+  return (clamped / vmax) ** DENSITY_GAMMA;
 }
 
-export function inferno(t: number): RGB {
-  const x = clamp01(t);
-  for (let i = 1; i < INFERNO.length; i++) {
-    if (x <= INFERNO[i][0]) {
-      const [x0, c0] = INFERNO[i - 1];
-      const [x1, c1] = INFERNO[i];
-      return lerp(c0, c1, (x - x0) / (x1 - x0));
-    }
-  }
-  return INFERNO[INFERNO.length - 1][1];
+export function signedT(value: number, vabs: number): number {
+  if (vabs <= 0) return 0.5;
+  return (Math.min(Math.max(value / vabs, -1), 1) + 1) / 2;
 }
 
-export function densityColor(t: number, gamma = 0.5): RGB {
-  return inferno(Math.pow(clamp01(t), gamma));
+export function maxOf(values: Float32Array): number {
+  let m = 0;
+  for (let i = 0; i < values.length; i++) m = Math.max(m, values[i]);
+  return m;
 }
 
-export function phaseColor(angle: number, brightness: number): RGB {
-  const t = ((angle + Math.PI) / (2 * Math.PI)) % 1;
-  const v = clamp01(brightness);
-  return lerp(BLUE, RED, t).map((c) => c * v) as RGB;
+export function maxAbs(values: Float32Array): number {
+  let m = 0;
+  for (let i = 0; i < values.length; i++) m = Math.max(m, Math.abs(values[i]));
+  return m;
 }
 
-export function toByte(c: RGB): [number, number, number] {
-  return [Math.round(clamp01(c[0] / 255) * 255), Math.round(clamp01(c[1] / 255) * 255), Math.round(clamp01(c[2] / 255) * 255)];
+export function phaseColor(phase: number): readonly [number, number, number] {
+  const h = (phase + Math.PI) / (2 * Math.PI);
+  return hslToRgb(h - Math.floor(h), 1, 0.55);
+}
+
+export function hslToRgb(
+  h: number,
+  s: number,
+  l: number,
+): readonly [number, number, number] {
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const f = (t: number): number => {
+    let x = t;
+    if (x < 0) x += 1;
+    if (x > 1) x -= 1;
+    if (x < 1 / 6) return p + (q - p) * 6 * x;
+    if (x < 1 / 2) return q;
+    if (x < 2 / 3) return p + (q - p) * (2 / 3 - x) * 6;
+    return p;
+  };
+  return [
+    Math.round(f(h + 1 / 3) * 255),
+    Math.round(f(h) * 255),
+    Math.round(f(h - 1 / 3) * 255),
+  ];
 }

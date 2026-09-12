@@ -8,12 +8,12 @@ import {
   type ForcePreset,
 } from "../lib/forceLaw";
 import { useAppStore } from "../state/store";
+import { plotHeight, usePlotWidth } from "../lib/plotSize";
 import { Badge } from "./Badge";
 import { Choice, ControlGroup, Select, Slider } from "./Field";
 import { ViewIntro } from "./ViewIntro";
 
-const W = 680;
-const H = 360;
+const SHAPE = { floor: 680, ratio: 0.676, min: 380, max: 560 };
 
 export function ForceLawView() {
   const {
@@ -26,10 +26,12 @@ export function ForceLawView() {
 
   const exprError = forcePreset === "custom" ? validateExprClient(forceExpr) : null;
 
+  const { width: W, ref: wrapRef } = usePlotWidth(SHAPE.floor);
+
   if (forceStatus === "error" || (forceLaw === null && forceStatus !== "loading")) {
     if (forceLaw === null) {
       return (
-        <div className="view-wrap">
+        <div className="view-wrap" ref={wrapRef}>
           <p className="hint-block">
             {forceStatus === "error" ? "The solve failed." : "Preparing the solve…"}
           </p>
@@ -44,7 +46,7 @@ export function ForceLawView() {
   const untrusted = forceLaw?.counterfactual.filter((c) => !c.trusted).length ?? 0;
 
   return (
-    <div className="view-wrap">
+    <div className="view-wrap" ref={wrapRef}>
       <ViewIntro
         lead={{
           title: "What if the force law were different?",
@@ -65,15 +67,17 @@ export function ForceLawView() {
         </div>
       )}
       <ControlGroup title="Potential">
-        <Choice<ForcePreset>
-          legend="preset"
-          value={forcePreset}
-          onChange={setForcePreset}
-          options={(Object.keys(PRESET_LABELS) as ForcePreset[]).map((p) => ({
-            value: p,
-            label: PRESET_LABELS[p],
-          }))}
-        />
+        <div data-tour="force-preset">
+          <Choice<ForcePreset>
+            legend="preset"
+            value={forcePreset}
+            onChange={setForcePreset}
+            options={(Object.keys(PRESET_LABELS) as ForcePreset[]).map((p) => ({
+              value: p,
+              label: PRESET_LABELS[p],
+            }))}
+          />
+        </div>
         {PRESET_PARAMS[forcePreset].map((spec) => (
           <Slider
             key={spec.name}
@@ -116,6 +120,7 @@ export function ForceLawView() {
         <p className="hint-block">Press Solve to run the altered potential.</p>
       ) : (
         <ForceDiagram
+          width={W}
           r={forceLaw.potential_curve.r}
           vEv={forceLaw.potential_curve.v_ev}
           levels={forceLaw.counterfactual.map((c) => ({
@@ -159,12 +164,15 @@ export function ForceDiagram({
   vEv,
   levels,
   reference,
+  width: W,
 }: {
   r: number[];
   vEv: number[];
   levels: { e: number; trusted: boolean }[];
   reference: { label: string; e: number }[];
+  width: number;
 }) {
+  const H = plotHeight(W, SHAPE.ratio, SHAPE.min, SHAPE.max);
   const allE = [...levels.map((l) => l.e), ...reference.map((x) => x.e)];
   const lo = Math.min(...allE, ...vEv.filter((v) => Number.isFinite(v)));
   const hi = Math.max(...allE, 0);
@@ -175,7 +183,7 @@ export function ForceDiagram({
     .map((rv, i) => `${i === 0 ? "M" : "L"}${x(rv).toFixed(1)},${y(vEv[i]).toFixed(1)}`)
     .join(" ");
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} role="img" className="levels-svg">
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }} role="img" className="levels-svg">
       <line x1={70} x2={W - 150} y1={y(0)} y2={y(0)} className="zero" />
       <path d={path} className="curve" />
       {levels.map((lv, i) => (

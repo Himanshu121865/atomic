@@ -1,5 +1,21 @@
-import type { HFLevels, SystemInfo } from "../api/types";
+import type { HFLevels, ManyElectronParams, SystemInfo } from "../api/types";
 import type { AtomModel } from "../lib/urlState";
+
+export interface ModelSelection {
+  model: AtomModel;
+  config: string | null;
+  exchange: boolean;
+  pauli: boolean;
+}
+
+export function manyElectronParams(s: ModelSelection): ManyElectronParams {
+  return {
+    model: s.model,
+    config: s.config,
+    exchange: s.model === "hf" ? s.exchange : true,
+    pauli: s.model === "hf" ? s.pauli : true,
+  };
+}
 
 export const HF_ORBITAL_CAPTION =
   "This is one orbital of a self-consistent field, and an orbital is not an " +

@@ -1,14 +1,14 @@
 import { scaleLinear } from "d3-scale";
 import { useEffect } from "react";
 import type { DensityComparison, FieldData, Quantity, RadialResponse } from "../api/types";
+import { plotHeight, usePlotWidth } from "../lib/plotSize";
 import { useAppStore } from "../state/store";
 import { Badge } from "./Badge";
 import { Disclosure } from "./Disclosure";
 import { ViewIntro } from "./ViewIntro";
 
-const W = 640;
-const H = 240;
 const M = { top: 16, right: 16, bottom: 34, left: 56 };
+const SHAPE = { ratio: 0.375, min: 180, max: 300 };
 
 export function zeroCrossings(grid: number[], values: number[]): number[] {
   const out: number[] = [];
@@ -50,6 +50,7 @@ function resampleOnto(field: FieldData, grid: number[]): number[] {
 
 function FieldPlot({
   field,
+  width: W,
   title,
   blurb,
   marker,
@@ -59,6 +60,7 @@ function FieldPlot({
   secondLabel,
 }: {
   field: FieldData;
+  width: number;
   title: string;
   blurb: string;
   marker?: Quantity;
@@ -67,6 +69,7 @@ function FieldPlot({
   second?: FieldData;
   secondLabel?: string;
 }) {
+  const H = plotHeight(W, SHAPE.ratio, SHAPE.min, SHAPE.max);
   const end = drawCutoff(field.values);
   const grid = field.grid.slice(0, end);
   const values = field.values.slice(0, end);
@@ -96,7 +99,7 @@ function FieldPlot({
           </span>
         )}
       </figcaption>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" className="plot-static">
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ minWidth: W }} role="img" className="plot-static">
         {x.ticks(6).map((t) => (
           <line
             key={`gx-${t}`} x1={x(t)} x2={x(t)} y1={M.top} y2={H - M.bottom}
@@ -180,20 +183,24 @@ function FieldPlot({
 export function RadialPlots({
   radial,
   meanRadius,
+  width,
 }: {
   radial: RadialResponse;
   meanRadius?: Quantity;
+  width: number;
 }) {
   return (
     <>
       <FieldPlot
         field={radial.r_wavefunction}
+        width={width}
         title="R(r), the radial wavefunction"
         blurb="The amplitude, sign and all."
         showNodes
       />
       <FieldPlot
         field={radial.radial_probability}
+        width={width}
         title="P(r), where the electron actually is"
         blurb="Probability per unit radius."
         marker={meanRadius}
@@ -257,9 +264,11 @@ export function RadialView() {
     void loadRadial();
   }, [n, l, system, model, config, exchange, pauli, compare, loadRadial]);
 
+  const { width: W, ref: wrapRef } = usePlotWidth();
+
   if (!radial) {
     return (
-      <div className="view-wrap">
+      <div className="view-wrap" ref={wrapRef}>
         <p className="hint-block">Loading the radial functions…</p>
       </div>
     );
@@ -273,17 +282,18 @@ export function RadialView() {
     : undefined;
 
   return (
-    <div className="view-wrap">
+    <div className="view-wrap" ref={wrapRef}>
       <ViewIntro
         lead={{
           title: `Radial functions of ${radial.system.name}`,
           lead: "R(r) is the amplitude with its sign. P(r) is where the electron is.",
         }}
       />
-      <RadialPlots radial={radial} meanRadius={stateInfo?.mean_radius ?? undefined} />
+      <RadialPlots radial={radial} meanRadius={stateInfo?.mean_radius ?? undefined} width={W} />
       {density && (
         <FieldPlot
           field={density}
+          width={W}
           title="D(r), the total electron density"
           blurb="Every occupied subshell summed. This one is observable; the orbitals above are not."
           second={overlay}
