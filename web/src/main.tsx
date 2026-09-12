@@ -1,14 +1,26 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { currentUrlState, parseAppUrl, serializeAppUrl } from "./lib/urlState";
+import { COUNT_CHOICES } from "./components/Controls";
+import { currentUrlState, isNewPlace, parseAppUrl, serializeAppUrl } from "./lib/urlState";
+import { isNarrow } from "./lib/viewport";
 import { useAppStore } from "./state/store";
 import "@fontsource-variable/space-grotesk";
 import "@fontsource-variable/jetbrains-mono";
 import "./index.css";
 
+if (isNarrow(window.innerWidth)) useAppStore.setState({ count: COUNT_CHOICES[0] });
+
 const opening = parseAppUrl(window.location.search);
-useAppStore.setState(opening);
+const { ghost: ghostOn, ...rest } = opening;
+useAppStore.setState(rest);
+if (ghostOn) useAppStore.setState({ ghostOn: true });
+
+if (opening.tour) {
+  const id = opening.tour;
+  const step = opening.step ?? 0;
+  queueMicrotask(() => useAppStore.getState().startTour(id, step));
+}
 
 {
   const settled = useAppStore.getState();
@@ -23,12 +35,25 @@ useAppStore.setState(opening);
   else void settled.loadLevels();
 }
 
+let lastUrl = {
+  ...currentUrlState(useAppStore.getState()),
+  tour: opening.tour ?? null,
+  step: opening.step ?? 0,
+  ghost: opening.ghost ?? false,
+};
+
 useAppStore.subscribe((s) => {
-  const qs = serializeAppUrl(currentUrlState(s));
-  const next = window.location.pathname + qs;
+  const now = { ...currentUrlState(s), tour: s.tourId, step: s.stepIndex, ghost: s.ghostOn };
+  const next = window.location.pathname + serializeAppUrl(now);
   if (next !== window.location.pathname + window.location.search) {
-    window.history.replaceState(null, "", next);
+    if (isNewPlace(lastUrl, now)) window.history.pushState(null, "", next);
+    else window.history.replaceState(null, "", next);
   }
+  lastUrl = now;
+});
+
+window.addEventListener("popstate", () => {
+  useAppStore.getState().applyUrl(parseAppUrl(window.location.search));
 });
 
 createRoot(document.getElementById("root")!).render(
