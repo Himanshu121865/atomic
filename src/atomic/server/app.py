@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -11,7 +12,7 @@ from typing import Literal
 import numpy as np
 from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, model_validator
 from pydantic import Field as PydanticField
@@ -51,10 +52,20 @@ from atomic.constants_lab import analyze_constants
 from atomic.density_compare import compare_total_densities
 from atomic.hf_atom import (
     HFResult,
+    PauliCollapse,
     evaluate_hf_state,
+    hf_exchange_energy,
     hf_radial,
     hf_total_radial_density,
+    pauli_collapse,
     solve_hartree_fock,
+)
+from atomic.isosurface import (
+    GRID_SIZES,
+    Isosurface,
+    hf_isosurface,
+    isosurface,
+    screened_isosurface,
 )
 from atomic.numerics.expression import ExpressionError
 from atomic.numerics.force_law import PRESETS, force_law_levels, free_form_levels
@@ -69,6 +80,7 @@ from atomic.screened_atom import (
     solve_screened_atom,
 )
 from atomic.server.jobs import Job, JobStatus, JobStore
+from atomic.server.ratelimit import DEFAULT_CAPACITY, DEFAULT_PERIOD, TokenBucket
 from atomic.server.schemas import (
     AbsorptionSpectrumModel,
     ChannelModel,
@@ -82,6 +94,7 @@ from atomic.server.schemas import (
     HFOrbitalModel,
     HFResultModel,
     LineModel,
+    PauliCollapseModel,
     ProfileModel,
     ProvenanceModel,
     QuantityModel,
@@ -90,6 +103,7 @@ from atomic.server.schemas import (
     SystemModel,
     ThermalModel,
 )
+from atomic.server.thumbnails import render_thumbnail
 from atomic.spectra import (
     compare_lines,
     load_reference,
@@ -128,6 +142,30 @@ def _job_worker_count() -> int:
     if override:
         return max(1, int(override))
     return max(2, min(4, os.cpu_count() or 2))
+
+
+async def _lifespan(app: FastAPI):
+    yield
+    app.state.executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _build_rate_limiter() -> TokenBucket | None:
+    if os.environ.get("ATOMIC_RATE_LIMIT", "").lower() in ("off", "0", "false"):
+        return None
+    return TokenBucket(
+        capacity=int(os.environ.get("ATOMIC_RATE_LIMIT_BURST", DEFAULT_CAPACITY)),
+        period=float(os.environ.get("ATOMIC_RATE_LIMIT_PERIOD", DEFAULT_PERIOD)),
+    )
+
+
+def _client_key(request, header: str | None) -> str:
+    if header:
+        forwarded = request.headers.get(header)
+        if forwarded:
+            candidate = forwarded.split(",")[-1].strip()
+            if candidate:
+                return candidate
+    return request.client.host if request.client else "unknown"
 
 
 class StarkSublevelModel(BaseModel):
@@ -310,6 +348,13 @@ class SampleJobResult:
     psi: WavefunctionValues
 
 
+@dataclasses.dataclass(frozen=True)
+class HFJobResult:
+    result: HFResult
+    exchange_energy: Quantity | None
+    collapse: PauliCollapse | None
+
+
 class HFRequest(BaseModel):
 
     z: int
@@ -444,13 +489,48 @@ def _hf_symbol(z: int) -> str | None:
         return None
 
 
-def _hf_result_model(result: HFResult) -> HFResultModel:
+def _pauli_collapse_model(collapse: PauliCollapse) -> PauliCollapseModel:
+    return PauliCollapseModel(
+        binding_change=QuantityModel.from_quantity(collapse.binding_change),
+        binding_change_ev=QuantityModel.from_quantity(_to_ev(collapse.binding_change)),
+        real_total_energy=QuantityModel.from_quantity(collapse.real.total_energy),
+        real_total_energy_ev=QuantityModel.from_quantity(
+            _to_ev(collapse.real.total_energy)
+        ),
+        real_config=format_config(collapse.real.config),
+        real_radius=QuantityModel.from_quantity(collapse.real_radius),
+        collapsed_radius=QuantityModel.from_quantity(collapse.collapsed_radius),
+        radius_ratio=QuantityModel.from_quantity(collapse.radius_ratio),
+        variational_zeta=QuantityModel.from_quantity(collapse.variational_zeta),
+        variational_energy=QuantityModel.from_quantity(collapse.variational_energy),
+        variational_energy_ev=QuantityModel.from_quantity(
+            _to_ev(collapse.variational_energy)
+        ),
+    )
+
+
+def _hf_result_model(
+    result: HFResult,
+    exchange_energy: Quantity | None = None,
+    collapse: PauliCollapse | None = None,
+) -> HFResultModel:
     return HFResultModel(
         z=result.z,
         n_electrons=result.n_electrons,
         symbol=_hf_symbol(result.z),
         config=format_config(result.config),
         is_ground=result.is_ground,
+        exchange=result.exchange,
+        exchange_energy=(
+            None if exchange_energy is None
+            else QuantityModel.from_quantity(exchange_energy)
+        ),
+        exchange_energy_ev=(
+            None if exchange_energy is None
+            else QuantityModel.from_quantity(_to_ev(exchange_energy))
+        ),
+        pauli=result.pauli,
+        collapse=None if collapse is None else _pauli_collapse_model(collapse),
         orbitals=[
             HFOrbitalModel(
                 n=o.n, l=o.l, label=f"{o.n}{SUBSHELL_LABELS[o.l]}",
@@ -506,6 +586,51 @@ class PlaneMetaModel(BaseModel):
     basis: str
     system: str
     model: str = "hydrogenic"
+    provenance: ProvenanceModel
+
+
+class IsoRequest(ManyElectronRequest):
+    n: int
+    l: int
+    m: int
+    fraction: float = PydanticField(default=0.9, gt=0.0, lt=1.0)
+    resolution: int = 96
+    basis: Literal["complex", "real"] = "complex"
+    system: str = "h"
+
+    @model_validator(mode="after")
+    def _resolution_is_offered(self) -> "IsoRequest":
+        if self.resolution not in GRID_SIZES:
+            raise ValueError(
+                f"resolution must be one of {GRID_SIZES}, got {self.resolution}"
+            )
+        return self
+
+
+class IsoMetaModel(BaseModel):
+    kind: Literal["isosurface"] = "isosurface"
+    vertex_count: int
+    triangle_count: int
+    channels: list[ChannelModel]
+    target_fraction: float
+    enclosed_fraction: QuantityModel
+    outside_fraction: float
+    level: QuantityModel
+    escaped_fraction: QuantityModel
+    mesh_volume: QuantityModel
+    voxel_volume: QuantityModel
+    area: QuantityModel
+    components: int
+    half_width: float
+    resolution: int
+    axis_unit: str
+    n: int
+    l: int
+    m: int
+    basis: str
+    system: str
+    model: str = "hydrogenic"
+    label: str
     provenance: ProvenanceModel
 
 
@@ -613,7 +738,7 @@ def _finished_result(jobs: JobStore, job_id: str):
 
 def create_app() -> FastAPI:
     _configure_logging()
-    app = FastAPI(title="atomic", version=atomic.__version__)
+    app = FastAPI(title="atomic", version=atomic.__version__, lifespan=_lifespan)
     app.state.job_systems = {}
     app.state.job_models = {}
 
@@ -629,7 +754,35 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware, allow_origins=_DEV_ORIGINS, allow_methods=["*"], allow_headers=["*"]
     )
-    app.state.rate_limit = None
+
+    app.state.rate_limit = _build_rate_limiter()
+    client_ip_header = os.environ.get("ATOMIC_CLIENT_IP_HEADER")
+
+    @app.middleware("http")
+    async def _limit_job_creation(request, call_next):
+        limiter = app.state.rate_limit
+        if (
+            limiter is not None
+            and request.method == "POST"
+            and request.url.path.startswith("/api/jobs/")
+        ):
+            charged = _client_key(request, client_ip_header)
+            wait = limiter.check(charged)
+            if wait is not None:
+                retry = max(1, math.ceil(wait))
+                logger.warning("rate limit refused %s; retry in %ds", charged, retry)
+                return JSONResponse(
+                    status_code=429,
+                    headers={"Retry-After": str(retry)},
+                    content={
+                        "detail": (
+                            f"too many compute jobs from this client; retry in "
+                            f"{retry}s. Each job is seconds of solver time, "
+                            f"so the rate is capped to stay responsive for everyone."
+                        )
+                    },
+                )
+        return await call_next(request)
 
     def _dispatch(job: Job, work) -> JobModel:
         app.state.executor.submit(jobs.run, job.id, work)
@@ -687,6 +840,7 @@ def create_app() -> FastAPI:
         n_max: int = 6,
         fine_structure: bool = False,
         alpha: float | None = None,
+        config: str | None = None,
         dirac: bool = False,
         b_field: float = 0.0,
         e_field: float = 0.0,
@@ -702,8 +856,21 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail="e_field must be >= 0")
         if is_atom_key(system):
             element = _screened_element(system)
+            cfg = (
+                aufbau_configuration(element.z)
+                if config is None
+                else _parse_config_or_422(config)
+            )
+            if total_electrons(cfg) != element.z:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"config has {total_electrons(cfg)} electrons; "
+                        f"{element.symbol} needs {element.z}"
+                    ),
+                )
             result = solve_screened_atom(
-                element.z, element.z, aufbau_configuration(element.z)
+                element.z, total_electrons(cfg), cfg
             )
             return ScreenedLevelsModel(
                 system=SystemModel.from_atom(
@@ -1266,6 +1433,24 @@ def create_app() -> FastAPI:
 
         return ForceLawModel.from_result(result, SystemModel.from_system(sys_), _to_ev)
 
+    @app.get("/api/thumbnail/{n}/{l}/{m}")
+    def thumbnail(n: int, l: int, m: int, system: str = "h",
+                  basis: str = "complex", size: int = 120) -> Response:
+        _validate_state(n, l, m)
+        try:
+            _resolve_system(system)
+        except HTTPException as exc:
+            raise HTTPException(status_code=422, detail=exc.detail) from exc
+        if basis not in ("complex", "real"):
+            raise HTTPException(status_code=422, detail=f"unknown basis {basis!r}")
+        if not 32 <= size <= 256:
+            raise HTTPException(status_code=422, detail="size must be in [32, 256]")
+        png = render_thumbnail(n, l, m, system, basis, size)
+        return Response(
+            content=png, media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     @app.post("/api/jobs/sample", response_model=JobModel)
     async def create_sample_job(req: SampleRequest) -> JobModel:
         _validate_state(req.n, req.l, req.m)
@@ -1378,6 +1563,53 @@ def create_app() -> FastAPI:
 
         return _dispatch(job, work)
 
+    @app.post("/api/jobs/isosurface", response_model=JobModel)
+    async def create_iso_job(req: IsoRequest) -> JobModel:
+        _validate_state(req.n, req.l, req.m)
+        hf_target = _hf_view_target(req) if req.model == "hf" else None
+        job = jobs.create()
+        app.state.job_systems[job.id] = req.system
+
+        if hf_target is not None:
+            hf_z, hf_n, hf_config = hf_target
+            app.state.job_models[job.id] = "hf"
+
+            def work(progress):
+                return hf_isosurface(
+                    hf_z, hf_n, req.n, req.l, req.m,
+                    target_fraction=req.fraction, basis=req.basis,
+                    resolution=req.resolution, progress=progress,
+                    config=hf_config, exchange=req.exchange, pauli=req.pauli,
+                )
+
+            return _dispatch(job, work)
+
+        if is_atom_key(req.system):
+            element = _screened_element(req.system)
+            app.state.job_models[job.id] = "screened"
+
+            def work(progress):
+                return screened_isosurface(
+                    element.z, element.z, req.n, req.l, req.m,
+                    target_fraction=req.fraction, basis=req.basis,
+                    resolution=req.resolution, progress=progress,
+                )
+
+            return _dispatch(job, work)
+
+        sys_ = _resolve_system(req.system)
+        app.state.job_models[job.id] = "hydrogenic"
+
+        def work(progress):
+            return isosurface(
+                req.n, req.l, req.m,
+                target_fraction=req.fraction, basis=req.basis,
+                Z=sys_.Z, mu_ratio=sys_.mu_ratio.value,
+                resolution=req.resolution, progress=progress,
+            )
+
+        return _dispatch(job, work)
+
     @app.post("/api/jobs/hf", response_model=JobModel)
     async def create_hf_job(req: HFRequest) -> JobModel:
         n_electrons = req.z if req.n_electrons is None else req.n_electrons
@@ -1387,6 +1619,9 @@ def create_app() -> FastAPI:
             else _parse_config_or_422(req.config, req.pauli)
         )
         _validate_hf_request(req.z, n_electrons, config, req.pauli)
+        comparable = not req.pauli and config == aufbau_configuration(
+            n_electrons, pauli=False
+        )
 
         job = jobs.create()
 
@@ -1394,8 +1629,13 @@ def create_app() -> FastAPI:
             result = solve_hartree_fock(
                 req.z, n_electrons, config, req.exchange, req.pauli
             )
+            delta = (
+                None if req.exchange or not req.pauli
+                else hf_exchange_energy(req.z, n_electrons, config)
+            )
+            collapse = pauli_collapse(req.z, n_electrons) if comparable else None
             progress(1.0)
-            return result
+            return HFJobResult(result, delta, collapse)
 
         return _dispatch(job, work)
 
@@ -1448,19 +1688,72 @@ def create_app() -> FastAPI:
             provenance=ProvenanceModel.from_provenance(pg.provenance),
         )
 
+    def _iso_meta(
+        surf: Isosurface, system_key: str, model_key: str
+    ) -> IsoMetaModel:
+        prov = ProvenanceModel.from_provenance(surf.provenance)
+        return IsoMetaModel(
+            vertex_count=int(surf.vertices.shape[0]),
+            triangle_count=int(surf.triangles.shape[0]),
+            channels=[
+                ChannelModel(
+                    name="vertices", dtype="float32", unit="bohr", provenance=prov
+                ),
+                ChannelModel(
+                    name="triangles", dtype="uint32", unit="1", provenance=prov
+                ),
+                ChannelModel(
+                    name="phase", dtype="float32", unit="rad",
+                    provenance=ProvenanceModel.from_provenance(surf.level.provenance),
+                ),
+            ],
+            target_fraction=surf.target_fraction,
+            enclosed_fraction=QuantityModel.from_quantity(surf.enclosed_fraction),
+            outside_fraction=surf.outside_fraction,
+            level=QuantityModel.from_quantity(surf.level),
+            escaped_fraction=QuantityModel.from_quantity(surf.escaped_fraction),
+            mesh_volume=QuantityModel.from_quantity(surf.mesh_volume),
+            voxel_volume=QuantityModel.from_quantity(surf.voxel_volume),
+            area=QuantityModel.from_quantity(surf.area),
+            components=surf.components,
+            half_width=surf.half_width,
+            resolution=surf.resolution,
+            axis_unit="bohr",
+            n=surf.n, l=surf.l, m=surf.m, basis=surf.basis, system=system_key,
+            model=model_key,
+            label=surf.label,
+            provenance=prov,
+        )
+
     @app.get(
         "/api/jobs/{job_id}/meta",
-        response_model=SampleMetaModel | PlaneMetaModel | HFResultModel,
+        response_model=SampleMetaModel | PlaneMetaModel | IsoMetaModel | HFResultModel,
     )
-    def job_meta(job_id: str) -> SampleMetaModel | PlaneMetaModel | HFResultModel:
+    def job_meta(
+        job_id: str,
+    ) -> SampleMetaModel | PlaneMetaModel | IsoMetaModel | HFResultModel:
         res = _finished_result(jobs, job_id)
         system_key = app.state.job_systems.get(job_id, "h")
         model_key = app.state.job_models.get(job_id, "hydrogenic")
         if isinstance(res, PlaneGrid):
             return _plane_meta(res, system_key, model_key)
-        if isinstance(res, HFResult):
-            return _hf_result_model(res)
+        if isinstance(res, Isosurface):
+            return _iso_meta(res, system_key, model_key)
+        if isinstance(res, HFJobResult):
+            return _hf_result_model(res.result, res.exchange_energy, res.collapse)
         return _sample_meta(res, system_key, model_key)
+
+    def _iso_channel_payload(surf: Isosurface, channel: str | None) -> np.ndarray:
+        if channel is None or channel == "vertices":
+            return surf.vertices.astype(np.float32)
+        if channel == "triangles":
+            return surf.triangles.astype(np.uint32)
+        if channel == "phase":
+            return surf.vertex_phase.astype(np.float32)
+        raise HTTPException(
+            status_code=422,
+            detail=f"no channel {channel!r} on this job; it has vertices, triangles, phase",
+        )
 
     @app.get("/api/jobs/{job_id}/data")
     def job_data(job_id: str, channel: str | None = None) -> Response:
@@ -1471,17 +1764,20 @@ def create_app() -> FastAPI:
                     status_code=422, detail="plane jobs have a single channel"
                 )
             payload = res.values.astype(np.float32)
-        elif isinstance(res, HFResult):
+        elif isinstance(res, Isosurface):
+            payload = _iso_channel_payload(res, channel)
+        elif isinstance(res, HFJobResult):
+            hf_res = res.result
             if channel is None or channel == "grid":
-                payload = res.orbitals[0].P.grid.astype(np.float32)
+                payload = hf_res.orbitals[0].P.grid.astype(np.float32)
             else:
-                for o in res.orbitals:
+                for o in hf_res.orbitals:
                     if _hf_channel(o.n, o.l) == channel:
                         payload = o.P.values.astype(np.float32)
                         break
                 else:
                     known = ", ".join(
-                        ["grid", *(_hf_channel(o.n, o.l) for o in res.orbitals)]
+                        ["grid", *(_hf_channel(o.n, o.l) for o in hf_res.orbitals)]
                     )
                     raise HTTPException(
                         status_code=422,

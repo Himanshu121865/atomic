@@ -161,3 +161,143 @@ def test_the_neglected_relativity_is_quantified_for_a_heavy_atom(client):
     assert "neglects relativity" not in " ".join(
         helium["total_energy"]["provenance"]["assumptions"]
     )
+
+
+def test_a_solve_defaults_to_real_physics(client):
+    _, meta = _run(client, z=4)
+    assert meta["exchange"] is True
+    assert meta["exchange_energy"] is None
+    assert meta["total_energy"]["provenance"]["fidelity"] == "approximation"
+
+
+def test_turning_exchange_off_arrives_labelled_counterfactual(client):
+    _, meta = _run(client, z=4, exchange=False)
+    assert meta["exchange"] is False
+    assert meta["total_energy"]["provenance"]["fidelity"] == "counterfactual"
+    assert all(
+        c["provenance"]["fidelity"] == "counterfactual"
+        for c in meta["channels"]
+    )
+
+
+def test_the_counterfactual_solve_brings_the_comparison_with_it(client):
+    _, meta = _run(client, z=4, exchange=False)
+    assert meta["exchange_energy"] is not None
+    assert meta["exchange_energy"]["unit"] == "hartree"
+    assert meta["exchange_energy"]["value"] < 0
+    assert meta["exchange_energy"]["provenance"]["fidelity"] == "counterfactual"
+    assert meta["exchange_energy_ev"]["unit"] == "eV"
+    assert meta["exchange_energy_ev"]["value"] < meta["exchange_energy"]["value"]
+
+
+def test_helium_reports_an_exchange_energy_of_zero_rather_than_omitting_it(client):
+    _, meta = _run(client, z=2, exchange=False)
+    assert meta["exchange_energy"]["value"] == 0.0
+
+
+def test_the_disclosure_reaches_the_browser_intact(client):
+    _, meta = _run(client, z=10, exchange=False)
+    joined = " ".join(meta["total_energy"]["provenance"]["assumptions"]).lower()
+    assert "distinguishable" in joined
+    assert "pauli principle is not switched off" in joined
+
+
+def test_the_orbital_amplitudes_still_come_back_as_float32(client):
+    job_id, meta = _run(client, z=4, exchange=False)
+    r = client.get(f"/api/jobs/{job_id}/data", params={"channel": "grid"})
+    assert r.status_code == 200
+    grid = np.frombuffer(r.content, dtype=np.float32)
+    assert grid.size == meta["grid_points"]
+    assert np.all(np.diff(grid) > 0)
+
+
+
+
+def test_pauli_defaults_on_so_the_collapse_cannot_arrive_by_accident(client):
+    _, meta = _run(client, z=4)
+    assert meta["pauli"] is True
+    assert meta["collapse"] is None
+
+
+def test_pauli_off_with_exchange_on_is_refused_by_the_schema(client):
+    r = client.post("/api/jobs/hf", json={"z": 4, "pauli": False, "exchange": True})
+    assert r.status_code == 422
+    assert "antisymmetry" in r.text
+
+
+def test_pauli_off_collapses_the_configuration_to_one_orbital(client):
+    _, meta = _run(client, z=10, pauli=False, exchange=False)
+    assert meta["pauli"] is False
+    assert meta["exchange"] is False
+    assert meta["config"] == "1s10"
+    assert len(meta["orbitals"]) == 1
+    assert meta["orbitals"][0]["occupancy"] == 10
+    assert meta["is_ground"] is True
+
+
+def test_the_collapsed_energy_arrives_counterfactual_everywhere(client):
+    _, meta = _run(client, z=10, pauli=False, exchange=False)
+    assert meta["total_energy"]["provenance"]["fidelity"] == "counterfactual"
+    assert all(
+        c["provenance"]["fidelity"] == "counterfactual" for c in meta["channels"]
+    )
+    assert all(
+        o["energy"]["provenance"]["fidelity"] == "counterfactual"
+        for o in meta["orbitals"]
+    )
+
+
+def test_the_collapsed_solve_brings_the_real_atom_with_it(client):
+    _, meta = _run(client, z=10, pauli=False, exchange=False)
+    collapse = meta["collapse"]
+    assert collapse is not None
+    assert collapse["real_config"] == "1s2 2s2 2p6"
+    assert collapse["binding_change"]["value"] < 0
+    assert collapse["binding_change_ev"]["unit"] == "eV"
+    assert collapse["real_total_energy"]["value"] == pytest.approx(-128.55, abs=0.05)
+    assert collapse["radius_ratio"]["value"] < 1.0
+    assert (
+        collapse["collapsed_radius"]["value"] < collapse["real_radius"]["value"]
+    )
+    assert collapse["real_radius"]["unit"] == "bohr"
+
+
+def test_the_external_check_travels_to_the_browser(client):
+    _, meta = _run(client, z=10, pauli=False, exchange=False)
+    collapse = meta["collapse"]
+    assert collapse["variational_zeta"]["value"] == pytest.approx(7.1875, abs=1e-9)
+    assert collapse["variational_energy"]["value"] == pytest.approx(-258.30, abs=0.01)
+    assert meta["total_energy"]["value"] <= collapse["variational_energy"]["value"]
+
+
+def test_the_stronger_disclosure_replaces_the_weaker_one_over_the_wire(client):
+    _, meta = _run(client, z=10, pauli=False, exchange=False)
+    joined = " ".join(meta["total_energy"]["provenance"]["assumptions"]).lower()
+    assert "occupancy cap is gone" in joined
+    assert "pauli principle is not switched off" not in joined
+    assert "term structure is undefined" in joined
+
+
+def test_a_hand_written_collapsed_configuration_is_accepted_without_a_comparison(
+    client,
+):
+    _, meta = _run(client, z=4, pauli=False, exchange=False, config="1s3 2s1")
+    assert meta["config"] == "1s3 2s1"
+    assert meta["collapse"] is None
+    assert meta["is_ground"] is False
+
+
+def test_the_cap_still_binds_when_pauli_is_on(client):
+    r = client.post("/api/jobs/hf", json={"z": 4, "config": "1s3 2s1"})
+    assert r.status_code == 422
+    assert "exceeds capacity" in r.text
+
+
+def test_the_collapsed_orbital_still_serves_its_amplitude(client):
+    job_id, meta = _run(client, z=10, pauli=False, exchange=False)
+    channel = meta["orbitals"][0]["channel"]
+    assert channel == "P_1s"
+    r = client.get(f"/api/jobs/{job_id}/data", params={"channel": channel})
+    assert r.status_code == 200
+    amplitude = np.frombuffer(r.content, dtype=np.float32)
+    assert amplitude.size == meta["grid_points"]

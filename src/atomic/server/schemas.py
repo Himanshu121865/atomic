@@ -240,6 +240,21 @@ class HFOrbitalModel(BaseModel):
     channel: str
 
 
+class PauliCollapseModel(BaseModel):
+
+    binding_change: QuantityModel
+    binding_change_ev: QuantityModel
+    real_total_energy: QuantityModel
+    real_total_energy_ev: QuantityModel
+    real_config: str
+    real_radius: QuantityModel
+    collapsed_radius: QuantityModel
+    radius_ratio: QuantityModel
+    variational_zeta: QuantityModel
+    variational_energy: QuantityModel
+    variational_energy_ev: QuantityModel
+
+
 class HFResultModel(BaseModel):
 
     kind: Literal["hf"] = "hf"
@@ -248,6 +263,11 @@ class HFResultModel(BaseModel):
     symbol: str | None
     config: str
     is_ground: bool
+    exchange: bool = True
+    exchange_energy: QuantityModel | None = None
+    exchange_energy_ev: QuantityModel | None = None
+    pauli: bool = True
+    collapse: PauliCollapseModel | None = None
     orbitals: list[HFOrbitalModel]
     total_energy: QuantityModel
     total_energy_ev: QuantityModel

@@ -1,19 +1,10 @@
-
 import numpy as np
 import pytest
 
 from atomic.atoms import aufbau_configuration, parse_config
 from atomic.hf_atom import evaluate_hf_state, hf_radial
+from atomic.isosurface import hf_isosurface
 from atomic.provenance import Fidelity
-
-try:
-    from atomic.isosurface import hf_isosurface
-except ModuleNotFoundError:
-    hf_isosurface = None
-
-needs_isosurface = pytest.mark.skipif(
-    hf_isosurface is None, reason="atomic.isosurface arrives in Phase 12"
-)
 
 
 def test_explicit_configuration_reaches_the_orbital():
@@ -135,14 +126,12 @@ def test_hf_plane_inherits_the_counterfactual_tier():
     assert not np.allclose(real.values, hartree.values)
 
 
-@needs_isosurface
 def test_hf_isosurface_reduces_to_the_closed_form_hydrogen_radius():
     surf = hf_isosurface(1, 1, 1, 0, 0, target_fraction=0.9, resolution=96)
     radii = np.linalg.norm(surf.vertices, axis=1)
     assert radii.mean() == pytest.approx(2.6612, rel=5e-3)
 
 
-@needs_isosurface
 def test_helium_hartree_and_hartree_fock_surfaces_are_bit_identical():
     with_x = hf_isosurface(2, 2, 1, 0, 0, resolution=64)
     without = hf_isosurface(2, 2, 1, 0, 0, resolution=64, exchange=False)
@@ -151,7 +140,6 @@ def test_helium_hartree_and_hartree_fock_surfaces_are_bit_identical():
     assert without.provenance.fidelity is Fidelity.COUNTERFACTUAL
 
 
-@needs_isosurface
 def test_multi_shell_atom_surfaces_differ_with_exchange_off():
     with_x = hf_isosurface(10, 10, 2, 1, 0, resolution=64)
     without = hf_isosurface(10, 10, 2, 1, 0, resolution=64, exchange=False)
@@ -168,7 +156,6 @@ def _orbital_mean_radius(z, n_electrons, n, l, config, exchange, pauli):
     )
 
 
-@needs_isosurface
 def test_pauli_collapse_orders_two_independent_measures_the_same_way():
     real_cfg = aufbau_configuration(4)
     collapsed_cfg = aufbau_configuration(4, pauli=False)

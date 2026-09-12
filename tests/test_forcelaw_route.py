@@ -5,14 +5,17 @@ from atomic.analytic.hydrogen import energy
 from atomic.server.app import create_app
 from atomic.systems import get_system
 
-app = create_app()
-
 H_MU = get_system("h").mu_ratio.value
 
 
-def test_powerlaw_default_is_hydrogen():
-    with TestClient(app) as client:
-        body = client.get("/api/forcelaw").json()
+@pytest.fixture()
+def client():
+    with TestClient(create_app()) as c:
+        yield c
+
+
+def test_powerlaw_default_is_hydrogen(client):
+    body = client.get("/api/forcelaw").json()
     assert body["preset"] == "powerlaw"
     assert body["params"] == {"p": 1.0}
     assert body["bound_count"] == 4
@@ -23,21 +26,19 @@ def test_powerlaw_default_is_hydrogen():
     assert len(body["potential_curve"]["r"]) == 256
 
 
-def test_custom_expr_recovers_hydrogen():
-    with TestClient(app) as client:
-        body = client.get("/api/forcelaw", params={"preset": "custom", "expr": "-1/r"}).json()
+def test_custom_expr_recovers_hydrogen(client):
+    body = client.get("/api/forcelaw", params={"preset": "custom", "expr": "-1/r"}).json()
     assert body["preset"] == "custom"
     assert body["expression"] == "-1/r"
     assert all(c["trusted"] for c in body["counterfactual"][:3])
 
 
-def test_forcelaw_validates():
-    with TestClient(app) as client:
-        assert client.get("/api/forcelaw", params={"preset": "nope"}).status_code == 422
-        assert client.get("/api/forcelaw", params={"p": 1.9}).status_code == 422
-        assert client.get("/api/forcelaw", params={"l": -1}).status_code == 422
-        assert client.get("/api/forcelaw", params={"n_states": 0}).status_code == 422
-        assert client.get("/api/forcelaw", params={"preset": "custom"}).status_code == 422
-        assert client.get(
-            "/api/forcelaw", params={"preset": "custom", "expr": "foo(r)"}
-        ).status_code == 422
+def test_forcelaw_validates(client):
+    assert client.get("/api/forcelaw", params={"preset": "nope"}).status_code == 422
+    assert client.get("/api/forcelaw", params={"p": 1.9}).status_code == 422
+    assert client.get("/api/forcelaw", params={"l": -1}).status_code == 422
+    assert client.get("/api/forcelaw", params={"n_states": 0}).status_code == 422
+    assert client.get("/api/forcelaw", params={"preset": "custom"}).status_code == 422
+    assert client.get(
+        "/api/forcelaw", params={"preset": "custom", "expr": "foo(r)"}
+    ).status_code == 422

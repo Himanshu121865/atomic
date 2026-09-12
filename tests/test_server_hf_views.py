@@ -63,7 +63,6 @@ def test_plane_job_under_hartree_fock_differs_from_the_screened_one(client):
     assert not np.allclose(values["gsz"], values["hf"])
 
 
-@pytest.mark.skip(reason="/api/jobs/isosurface arrives in Phase 12")
 def test_iso_job_carries_the_counterfactual_badge(client):
     job = _run(
         client, "/api/jobs/isosurface",
